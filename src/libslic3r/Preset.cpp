@@ -225,9 +225,101 @@ static const std::unordered_map<std::string, std::string> pre_family_model_map {
 }};
 
 
+// Orca: BBL printer profiles encode a per-(extruder × nozzle_volume_type) variant matrix,
+// producing arrays of size n_extruders * n_variants_per_extruder for keys in
+// printer_options_with_variant_1/_2. OrcaSlicer keeps one machine setting slot per
+// physical extruder, so collapse these arrays in memory and intentionally keep the
+// Standard flow variant for each physical extruder. Profile JSON on disk is untouched,
+// so vendor profiles sync from Bambu Studio without edits.
+//
+// extruder_variant_list (one entry per physical extruder, each a comma-separated list of
+// supported variants for that extruder) is the source of truth — a child profile may
+// override printer_extruder_variant with the full matrix while inheriting an
+// already-flattened printer_extruder_id from a parent this function previously processed.
+static void collapse_printer_variants_to_extruders(DynamicPrintConfig& config)
+{
+    auto* variant_opt = config.option<ConfigOptionStrings>("printer_extruder_variant");
+    auto* nd_opt      = config.option<ConfigOptionFloats>("nozzle_diameter");
+    if (!variant_opt || !nd_opt)
+        return;
+
+    const size_t n_extruders   = nd_opt->values.size();
+    const size_t orig_variants = variant_opt->values.size();
+    if (n_extruders == 0 || orig_variants <= n_extruders)
+        return;
+
+    auto* variant_list_opt = config.option<ConfigOptionStrings>("extruder_variant_list");
+    if (!variant_list_opt || variant_list_opt->values.size() != n_extruders)
+        return;
+
+    // Use cumulative offsets, not name search: symmetric printers (H2D) may have
+    // identical variant strings on multiple extruders and a name search would collapse
+    // them all to the first match.
+    const std::string standard_flow = get_nozzle_volume_type_string(NozzleVolumeType::nvtStandard);
+    std::vector<int> keep;
+    keep.reserve(n_extruders);
+    int cursor = 0;
+    for (size_t e = 0; e < n_extruders; ++e) {
+        std::vector<std::string> variants;
+        boost::split(variants, variant_list_opt->values[e], boost::is_any_of(","), boost::token_compress_on);
+        int variant_count = 0;
+        int standard_offset = -1;
+        for (auto& v : variants) {
+            boost::trim(v);
+            if (v.empty())
+                continue;
+            if (standard_offset < 0 && (v == standard_flow || boost::ends_with(v, " " + standard_flow)))
+                standard_offset = variant_count;
+            ++variant_count;
+        }
+        if (variant_count == 0)
+            return;
+        keep.push_back(cursor + (standard_offset >= 0 ? standard_offset : 0));
+        cursor += variant_count;
+    }
+    if (size_t(cursor) != orig_variants)
+        return;
+
+    auto pick_with_stride = [&](const std::string& key, int stride) {
+        ConfigOption* opt = config.option(key);
+        if (!opt || !opt->is_vector())
+            return;
+        auto* vec = static_cast<ConfigOptionVectorBase*>(opt);
+        // Skip arrays not sized to the full variant grid; replace_nil_and_resize (called
+        // later from extend_default_config_length) handles those.
+        if (vec->size() != orig_variants * size_t(stride))
+            return;
+        // In-place compaction is safe because keep[] is monotonically non-decreasing
+        // (cursor only advances), so read_idx >= write_idx for every assignment.
+        for (size_t e = 0; e < keep.size(); ++e) {
+            for (int s = 0; s < stride; ++s) {
+                vec->set_at(vec, e * stride + s, keep[e] * stride + s);
+            }
+        }
+        vec->resize(keep.size() * stride);
+    };
+
+    for (const auto& key : printer_options_with_variant_1)
+        pick_with_stride(key, 1);
+    for (const auto& key : printer_options_with_variant_2)
+        pick_with_stride(key, 2);
+
+    // Rebuild rather than flatten: printer_extruder_id may have arrived parent-flattened,
+    // stretched by an earlier replace_nil_and_resize, or fresh from JSON.
+    if (auto* id_opt = config.option<ConfigOptionInts>("printer_extruder_id")) {
+        id_opt->values.clear();
+        id_opt->values.reserve(n_extruders);
+        for (size_t e = 1; e <= n_extruders; ++e)
+            id_opt->values.push_back(int(e));
+    }
+}
+
 // 中间版本兼容性处理，如果是nil值，先改成default值，再进行扩展
 void extend_default_config_length(DynamicPrintConfig& config, const bool set_nil_to_default, const DynamicPrintConfig& defaults)
 {
+    // Orca: flatten BBL variant arrays to one slot per physical extruder before sizing.
+    collapse_printer_variants_to_extruders(config);
+
     constexpr int default_param_length = 1;
     int filament_variant_length = default_param_length;
     int process_variant_length = default_param_length;

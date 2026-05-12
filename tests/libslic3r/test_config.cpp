@@ -1,5 +1,6 @@
 #include <catch2/catch_all.hpp>
 
+#include "libslic3r/Preset.hpp"
 #include "libslic3r/PrintConfig.hpp"
 #include "libslic3r/PrintConfigConstants.hpp"
 #include "libslic3r/LocalesUtils.hpp"
@@ -310,6 +311,135 @@ SCENARIO("update_non_diff_values_to_base_config preserves child vectors when chi
                 REQUIRE(pe_id->values.size() == 2);
                 REQUIRE(pe_id->values[0] == 1);
                 REQUIRE(pe_id->values[1] == 2);
+            }
+        }
+    }
+}
+
+SCENARIO("extend_default_config_length collapses selectable nozzle flow variants to Standard",
+         "[Config][Variant]") {
+    GIVEN("A single-extruder BBL-style profile with Standard and High Flow variants") {
+        Slic3r::DynamicPrintConfig config;
+
+        config.set_key_value("nozzle_diameter", new Slic3r::ConfigOptionFloats({0.4}));
+        config.set_key_value("extruder_type", new Slic3r::ConfigOptionEnumsGeneric({Slic3r::etDirectDrive}));
+        config.set_key_value("extruder_variant_list", new Slic3r::ConfigOptionStrings({
+            "Direct Drive Standard,Direct Drive High Flow"
+        }));
+        config.set_key_value("printer_extruder_id", new Slic3r::ConfigOptionInts({1, 1}));
+        config.set_key_value("printer_extruder_variant", new Slic3r::ConfigOptionStrings({
+            "Direct Drive Standard", "Direct Drive High Flow"
+        }));
+        config.set_key_value("machine_max_speed_x", new Slic3r::ConfigOptionFloats({
+            500, 200, 200, 200
+        }));
+
+        WHEN("default config lengths are normalized") {
+            Slic3r::extend_default_config_length(config, false, {});
+
+            THEN("only the Standard nozzle flow variant remains") {
+                auto* variants = config.option<Slic3r::ConfigOptionStrings>("printer_extruder_variant");
+                REQUIRE(variants->values == std::vector<std::string>({
+                    "Direct Drive Standard"
+                }));
+            }
+
+            THEN("Standard machine limits are kept") {
+                auto* speed_x = config.option<Slic3r::ConfigOptionFloats>("machine_max_speed_x");
+                REQUIRE(speed_x->values == std::vector<double>({500, 200}));
+            }
+
+            THEN("printer extruder ids are rebuilt per physical extruder") {
+                auto* ids = config.option<Slic3r::ConfigOptionInts>("printer_extruder_id");
+                REQUIRE(ids->values == std::vector<int>({1}));
+            }
+        }
+    }
+}
+
+SCENARIO("extend_default_config_length collapses mixed physical extruder variants",
+         "[Config][Variant]") {
+    GIVEN("An X2D-style profile with one Direct Drive and one Bowden extruder") {
+        Slic3r::DynamicPrintConfig config;
+
+        config.set_key_value("nozzle_diameter", new Slic3r::ConfigOptionFloats({0.4, 0.4}));
+        config.set_key_value("extruder_type", new Slic3r::ConfigOptionEnumsGeneric({
+            Slic3r::etDirectDrive, Slic3r::etBowden
+        }));
+        config.set_key_value("extruder_variant_list", new Slic3r::ConfigOptionStrings({
+            "Direct Drive Standard,Direct Drive High Flow",
+            "Bowden Standard,Bowden High Flow"
+        }));
+        config.set_key_value("printer_extruder_id", new Slic3r::ConfigOptionInts({1, 1, 2, 2}));
+        config.set_key_value("printer_extruder_variant", new Slic3r::ConfigOptionStrings({
+            "Direct Drive Standard", "Direct Drive High Flow",
+            "Bowden Standard", "Bowden High Flow"
+        }));
+        config.set_key_value("retraction_length", new Slic3r::ConfigOptionFloats({
+            0.8, 0.8, 2.0, 2.0
+        }));
+        config.set_key_value("machine_max_speed_e", new Slic3r::ConfigOptionFloats({
+            30, 30, 30, 30, 120, 120, 120, 120
+        }));
+
+        WHEN("default config lengths are normalized") {
+            Slic3r::extend_default_config_length(config, false, {});
+
+            THEN("one Standard variant is kept for each physical extruder") {
+                auto* variants = config.option<Slic3r::ConfigOptionStrings>("printer_extruder_variant");
+                REQUIRE(variants->values == std::vector<std::string>({
+                    "Direct Drive Standard", "Bowden Standard"
+                }));
+            }
+
+            THEN("per-extruder retraction settings are aligned") {
+                auto* retraction = config.option<Slic3r::ConfigOptionFloats>("retraction_length");
+                REQUIRE(retraction->values == std::vector<double>({0.8, 2.0}));
+            }
+
+            THEN("stride-2 machine limits are aligned") {
+                auto* speed_e = config.option<Slic3r::ConfigOptionFloats>("machine_max_speed_e");
+                REQUIRE(speed_e->values == std::vector<double>({30, 30, 120, 120}));
+            }
+        }
+    }
+}
+
+SCENARIO("extend_default_config_length collapses symmetric physical extruder variants",
+         "[Config][Variant]") {
+    GIVEN("An H2D-style profile with matching Direct Drive extruder variant lists") {
+        Slic3r::DynamicPrintConfig config;
+
+        config.set_key_value("nozzle_diameter", new Slic3r::ConfigOptionFloats({0.4, 0.4}));
+        config.set_key_value("extruder_type", new Slic3r::ConfigOptionEnumsGeneric({
+            Slic3r::etDirectDrive, Slic3r::etDirectDrive
+        }));
+        config.set_key_value("extruder_variant_list", new Slic3r::ConfigOptionStrings({
+            "Direct Drive Standard,Direct Drive High Flow",
+            "Direct Drive Standard,Direct Drive High Flow"
+        }));
+        config.set_key_value("printer_extruder_id", new Slic3r::ConfigOptionInts({1, 1, 2, 2}));
+        config.set_key_value("printer_extruder_variant", new Slic3r::ConfigOptionStrings({
+            "Direct Drive Standard", "Direct Drive High Flow",
+            "Direct Drive Standard", "Direct Drive High Flow"
+        }));
+        config.set_key_value("machine_max_speed_e", new Slic3r::ConfigOptionFloats({
+            50, 50, 60, 60, 70, 70, 80, 80
+        }));
+
+        WHEN("default config lengths are normalized") {
+            Slic3r::extend_default_config_length(config, false, {});
+
+            THEN("the Standard variant is kept for each physical extruder, not the first matching name globally") {
+                auto* variants = config.option<Slic3r::ConfigOptionStrings>("printer_extruder_variant");
+                REQUIRE(variants->values == std::vector<std::string>({
+                    "Direct Drive Standard", "Direct Drive Standard"
+                }));
+            }
+
+            THEN("stride-2 machine limits are kept from each extruder's Standard slot") {
+                auto* speed_e = config.option<Slic3r::ConfigOptionFloats>("machine_max_speed_e");
+                REQUIRE(speed_e->values == std::vector<double>({50, 50, 70, 70}));
             }
         }
     }
