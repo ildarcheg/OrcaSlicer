@@ -23,9 +23,11 @@
 #include "slic3r/GUI/I18N.hpp"
 
 #include <algorithm>
+#include <functional>
 #include <iterator>
 #include <exception>
 #include <cstdlib>
+#include <memory>
 #include <regex>
 #include <thread>
 #include <string_view>
@@ -778,41 +780,89 @@ void GUI_App::post_init()
         plater_->canvas3D()->enable_render(false);
         mainframe->select_tab(size_t(MainFrame::tp3DEditor));
         plater_->select_view_3D("3D");
-        //BBS init the opengl resource here
-//#ifdef __linux__
-        if (plater_->canvas3D()->get_wxglcanvas()->IsShownOnScreen()&&plater_->canvas3D()->make_current_for_postinit()) {
-//#endif
-            Size canvas_size = plater_->canvas3D()->get_canvas_size();
+
+        auto restore_startup_tab = [this]() {
+            if (is_editor())
+                mainframe->select_tab(size_t(0));
+            if (app_config->get("default_page") == "1")
+                mainframe->select_tab(size_t(1));
+        };
+
+        auto load_gl_resources = [this, slow_bootup]() -> bool {
+            GLCanvas3D* canvas = plater_->canvas3D();
+            if (canvas == nullptr || canvas->get_wxglcanvas() == nullptr ||
+                !canvas->get_wxglcanvas()->IsShownOnScreen() || !canvas->make_current_for_postinit())
+                return false;
+
+            Size canvas_size = canvas->get_canvas_size();
             wxGetApp().imgui()->set_display_size(static_cast<float>(canvas_size.get_width()), static_cast<float>(canvas_size.get_height()));
             BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ", start to init opengl";
             wxGetApp().init_opengl();
 
             BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ", finished init opengl";
-            plater_->canvas3D()->init();
+            canvas->init();
 
             BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ", finished init canvas3D";
             wxGetApp().imgui()->new_frame();
 
             BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ", finished init imgui frame";
-            plater_->canvas3D()->enable_render(true);
+            canvas->enable_render(true);
 
             if (!slow_bootup) {
                 BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ", start to render a first frame for test";
-                plater_->canvas3D()->render(false);
+                canvas->render(false);
                 BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ", finished rendering a first frame for test";
             }
-//#ifdef __linux__
+            return true;
+        };
+
+        //BBS init the opengl resource here
+        if (load_gl_resources()) {
+            restore_startup_tab();
         }
+#if defined(__linux__) && defined(__WXGTK__)
+        else {
+            BOOST_LOG_TRIVIAL(warning) << __FUNCTION__ << "Found glcontext not ready, postpone the init";
+
+            if (is_running_on_wayland()) {
+                constexpr int max_attempts = 8;
+                auto attempts = std::make_shared<int>(0);
+                auto retry = std::make_shared<std::function<void()>>();
+                *retry = [this, attempts, retry, restore_startup_tab, load_gl_resources]() {
+                    if (load_gl_resources()) {
+                        restore_startup_tab();
+                        *retry = nullptr;
+                        return;
+                    }
+
+                    ++(*attempts);
+                    if (*attempts < max_attempts) {
+                        CallAfter(*retry);
+                        return;
+                    }
+
+                    BOOST_LOG_TRIVIAL(warning) << __FUNCTION__ << "Found glcontext not ready after deferred attempts, postpone the init";
+                    plater_->canvas3D()->enable_render(true);
+                    plater_->canvas3D()->set_as_dirty();
+                    restore_startup_tab();
+                    *retry = nullptr;
+                };
+                CallAfter(*retry);
+            } else {
+                plater_->canvas3D()->enable_render(true);
+                plater_->canvas3D()->set_as_dirty();
+                restore_startup_tab();
+            }
+        }
+#else
         else {
             BOOST_LOG_TRIVIAL(warning) << __FUNCTION__ << "Found glcontext not ready, postpone the init";
             plater_->canvas3D()->enable_render(true);
             plater_->canvas3D()->set_as_dirty();
+            restore_startup_tab();
         }
-//#endif
-        if (is_editor())
-            mainframe->select_tab(size_t(0));
-        if (app_config->get("default_page") == "1")
-            mainframe->select_tab(size_t(1));
+#endif
+
 #ifndef __linux__
         mainframe->Thaw();
 #endif
@@ -3460,7 +3510,7 @@ void GUI_App::select_machine(const std::string& agent_id)
     }
 
     // Get config source (preset or physical printer)
-    const auto& preset = preset_bundle->printers.get_edited_preset();
+    auto& preset = preset_bundle->printers.get_edited_preset();
     const DynamicPrintConfig* host_cfg = &preset.config;
 
     std::string print_host = host_cfg->opt_string("print_host");
@@ -3493,7 +3543,9 @@ void GUI_App::select_machine(const std::string& agent_id)
         // We use dev_id as dev_ip to store the address (host:port)
         machine.dev_ip = dev_id;
         machine.dev_name = dev_id;
-        machine.printer_type = preset.config.opt_string("printer_model");
+        machine.printer_type = preset.get_printer_type(preset_bundle);
+        if (machine.printer_type.empty())
+            machine.printer_type = preset.config.opt_string("printer_model");
         auto access_code = preset.config.opt_string("printhost_apikey");
         // Orca expect non empty access code
         if (access_code.empty()) {
