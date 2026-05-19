@@ -42,4 +42,19 @@ struct ProjectState {
     }
 };
 
+// --------------------------------------------------------------------------
+// Plate mutations (P2).
+//
+// All mutate ProjectState in place and throw on invalid inputs. The CLI
+// command callbacks (src/cli/commands/plate.cpp) catch the exceptions and
+// map them to ExitCode::{duplicate_name,unknown_reference,invalid_state}.
+//
+// add_plate: append a new plate with `name`. No thumbnail bytes are stored
+// here -- the save passthrough (passthrough_missing_thumbnails in io.cpp)
+// injects a placeholder PNG for any plate whose thumbnails don't already
+// exist in the source archive.
+//
+//   throws std::invalid_argument if `name` matches an existing plate.
+void add_plate(ProjectState& s, const std::string& name);
+
 } // namespace orca_cli
