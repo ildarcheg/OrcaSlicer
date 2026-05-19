@@ -14,6 +14,7 @@ add_library(orca_cli_core STATIC
     nanosvg_impl.cpp
     png_placeholder.cpp
     commands/project_init.cpp
+    commands/plate.cpp
 )
 
 target_include_directories(orca_cli_core PUBLIC

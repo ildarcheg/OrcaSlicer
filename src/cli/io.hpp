@@ -1,4 +1,5 @@
 #pragma once
+#include "globals.hpp"
 #include "project_ops.hpp"
 #include <string>
 
@@ -17,5 +18,11 @@ ProjectState load_project(const std::string& path);
 // Throws std::runtime_error on store failure; the .tmp file is removed in
 // both failure paths.
 void save_project(const ProjectState& state, const std::string& target_path);
+
+// resolve_save_target: returns opts.output when --output was provided,
+// otherwise returns input_file (so the mutating subcommand writes back
+// over its input by default). Centralized here so every mutating
+// command uses identical semantics.
+std::string resolve_save_target(const GlobalOpts& opts, const std::string& input_file);
 
 } // namespace orca_cli

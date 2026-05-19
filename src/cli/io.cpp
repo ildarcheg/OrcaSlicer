@@ -357,4 +357,9 @@ void save_project(const ProjectState& s, const std::string& target_path)
     fs::rename(tmp, target_path);
 }
 
+std::string resolve_save_target(const GlobalOpts& opts, const std::string& input_file)
+{
+    return opts.output.has_value() ? *opts.output : input_file;
+}
+
 } // namespace orca_cli
