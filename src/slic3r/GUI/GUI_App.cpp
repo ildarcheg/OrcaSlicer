@@ -11,6 +11,7 @@
 #include "Downloader.hpp"
 #include <boost/chrono/duration.hpp>
 #include <boost/log/detail/native_typeof.hpp>
+#include <libslic3r/Config.hpp>
 #include <wx/event.h>
 
 // Localization headers: include libslic3r version first so everything in this file
@@ -4849,20 +4850,39 @@ void GUI_App::on_http_error(wxCommandEvent &evt)
         return;
     }
 
-    static bool m_show_api_error = false;
+    // No need to show dialog for 410: 410 means resource has been deleted from the server.
+    if (status == 410) {
+        BOOST_LOG_TRIVIAL(info) << "Http error 410.";
+        return;
+    }
+
+    static bool m_is_error_shown = false;
     // Show general error notification for Orca Cloud API failures (not Bambu)
     if (provider == ORCA_CLOUD_PROVIDER && status >= 400 && code != HttpErrorVersionLimited) {
-        if (m_show_api_error)
-            return;
-        m_show_api_error = true;
-
         wxString msg;
         if (!error.empty()) {
             msg = wxString::Format(_L("API error (HTTP %u): %s"), status, wxString::FromUTF8(error));
         } else {
             msg = wxString::Format(_L("API error (HTTP %u)"), status);
         }
-        wxMessageBox(msg, _L("Orca Cloud API Error"), wxOK | wxICON_ERROR, wxGetApp().mainframe);
+
+        if (app_config->get_bool("developer_mode")) {
+            // Use notification manager if ImGui is ready; fall back to wxMessageBox on Linux
+            // where ImGui may not be initialized until the user switches to the Prepare tab.
+            if (wxGetApp().plater() != nullptr && wxGetApp().imgui()->display_initialized()) {
+                wxGetApp()
+                    .plater()
+                    ->get_notification_manager()
+                    ->push_notification(NotificationType::PlaterError, NotificationManager::NotificationLevel::WarningNotificationLevel,
+                                        msg.ToUTF8().data());
+            }
+            return;
+        }
+
+        if (!m_is_error_shown) {
+            m_is_error_shown = true;
+            wxMessageBox(msg, _L("Orca Cloud API Error"), wxOK | wxICON_ERROR, wxGetApp().mainframe);
+        }
     }
 }
 
