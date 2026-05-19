@@ -32,6 +32,7 @@ target_include_directories(cli_tests PRIVATE
 target_link_libraries(cli_tests PRIVATE
     Catch2::Catch2WithMain
     test_common
+    orca_cli_core
     libslic3r
     Boost::filesystem
     Boost::system

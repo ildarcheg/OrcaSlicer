@@ -3,20 +3,22 @@ cmake_minimum_required(VERSION 3.13)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-add_executable(orca-cli
-    main.cpp
+# Core orca-cli library. Everything except the main entry point lives here so
+# the cli_tests target can link the same translation units the binary uses.
+add_library(orca_cli_core STATIC
     globals.cpp
     output.cpp
     io.cpp
     project_ops.cpp
+    nanosvg_impl.cpp
 )
 
-target_include_directories(orca-cli PRIVATE
+target_include_directories(orca_cli_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/cli11
 )
 
-target_link_libraries(orca-cli PRIVATE
+target_link_libraries(orca_cli_core PUBLIC
     libslic3r
     Boost::filesystem
     Boost::system
@@ -24,8 +26,16 @@ target_link_libraries(orca-cli PRIVATE
 )
 
 if (WIN32)
-    target_compile_definitions(orca-cli PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)
+    target_compile_definitions(orca_cli_core PUBLIC NOMINMAX _CRT_SECURE_NO_WARNINGS)
 endif()
+
+add_executable(orca-cli
+    main.cpp
+)
+
+target_link_libraries(orca-cli PRIVATE
+    orca_cli_core
+)
 
 # Copy DLL deps next to orca-cli so it can be invoked directly from the build dir.
 # Use copy_directory_if_different (CMake 3.26+) so incremental builds only re-copy
