@@ -47,21 +47,25 @@ void remove_plate(ProjectState& s, const std::string& name)
 
 void rename_plate(ProjectState& s, const std::string& from, const std::string& to)
 {
-    if (from == to) return;
-
-    // Single pass: detect both `to`-collision and find the `from`-plate. We
-    // check duplicates eagerly (before mutating) so we never leave the state
-    // half-renamed on a collision.
+    // Existence check first: `--from missing --to missing` must report the
+    // missing-`from` error rather than silently no-op.
     Slic3r::PlateData* found = nullptr;
     for (auto& p : s.plates) {
-        if (p->plate_name == to)
-            throw std::invalid_argument("duplicate plate name: " + to);
-        if (p->plate_name == from)
-            found = p.get();
+        if (p->plate_name == from) found = p.get();
     }
     if (!found)
         throw std::out_of_range("plate not found: " + from);
 
+    // Self-rename is a no-op AFTER existence is confirmed.
+    if (from == to) return;
+
+    // Duplicate-`to` check (excluding the plate we'd be renaming, though for
+    // distinct from/to here that distinction is moot -- p->plate_name == to
+    // cannot also equal from).
+    for (auto& p : s.plates) {
+        if (p.get() != found && p->plate_name == to)
+            throw std::invalid_argument("duplicate plate name: " + to);
+    }
     found->plate_name = to;
 }
 

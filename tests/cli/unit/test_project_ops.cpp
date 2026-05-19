@@ -117,3 +117,23 @@ TEST_CASE("orca-cli: rename_plate rejects duplicate to",
     }
     REQUIRE_THROWS_AS(rename_plate(s, "A", "B"), std::invalid_argument);
 }
+
+TEST_CASE("orca-cli: rename_plate self-rename succeeds if from exists", "[orca-cli][P2][unit]") {
+    using namespace orca_cli;
+    ProjectState s;
+    s.project_config = std::make_unique<Slic3r::DynamicPrintConfig>();
+    s.model          = std::make_unique<Slic3r::Model>();
+    s.plates.push_back(std::make_unique<Slic3r::PlateData>());
+    s.plates.back()->plate_name = "Same";
+    REQUIRE_NOTHROW(rename_plate(s, "Same", "Same"));
+}
+
+TEST_CASE("orca-cli: rename_plate self-rename rejects unknown from", "[orca-cli][P2][unit]") {
+    using namespace orca_cli;
+    ProjectState s;
+    s.project_config = std::make_unique<Slic3r::DynamicPrintConfig>();
+    s.model          = std::make_unique<Slic3r::Model>();
+    s.plates.push_back(std::make_unique<Slic3r::PlateData>());
+    s.plates.back()->plate_name = "Exists";
+    REQUIRE_THROWS_AS(rename_plate(s, "Missing", "Missing"), std::out_of_range);
+}
