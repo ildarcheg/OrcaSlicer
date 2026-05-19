@@ -12,6 +12,7 @@ add_subdirectory(dev-utils)
 find_package(libnoise REQUIRED)
 
 add_subdirectory(libslic3r)
+add_subdirectory(cli)
 
 if (SLIC3R_GUI)
     add_subdirectory(glad)
