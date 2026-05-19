@@ -4848,6 +4848,22 @@ void GUI_App::on_http_error(wxCommandEvent &evt)
         }
         return;
     }
+
+    // Show general error notification for Orca Cloud API failures (not Bambu)
+    if (provider == ORCA_CLOUD_PROVIDER && status >= 400 && code != HttpErrorVersionLimited) {
+        if (m_show_http_errpr_msgdlg)
+            return;
+        m_show_http_errpr_msgdlg = true;
+
+        wxString msg;
+        if (!error.empty()) {
+            msg = wxString::Format(_L("API error (HTTP %u): %s"), status, wxString::FromUTF8(error));
+        } else {
+            msg = wxString::Format(_L("API error (HTTP %u)"), status);
+        }
+        wxMessageBox(msg, _L("Orca Cloud API Error"), wxOK | wxICON_ERROR, wxGetApp().mainframe);
+        m_show_http_errpr_msgdlg = false;
+    }
 }
 
 void GUI_App::enable_user_preset_folder(bool enable)

@@ -1304,6 +1304,7 @@ void OrcaCloudServiceAgent::load_sync_state()
             }
         }
     } catch (...) {
+        BOOST_LOG_TRIVIAL(warning) << "load_sync_state: failed to read sync state file, resetting timestamp to 0";
         sync_state.last_sync_timestamp = 0;
     }
 }
@@ -1322,7 +1323,9 @@ void OrcaCloudServiceAgent::save_sync_state()
             ofs.close();
             boost::filesystem::rename(tmp_path, sync_state_path);
         }
-    } catch (...) {}
+    } catch (...) {
+        BOOST_LOG_TRIVIAL(warning) << "save_sync_state: failed to write sync state file";
+    }
 }
 
 void OrcaCloudServiceAgent::clear_sync_state()
@@ -2230,7 +2233,9 @@ void OrcaCloudServiceAgent::json_to_map(const std::string& json, std::map<std::s
                 map[it.key()] = it.value().dump();
             }
         }
-    } catch (...) {}
+    } catch (...) {
+        BOOST_LOG_TRIVIAL(warning) << "json_to_map: failed to parse JSON";
+    }
 }
 
 // ============================================================================
