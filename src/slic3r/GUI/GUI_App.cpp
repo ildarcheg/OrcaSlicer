@@ -4849,11 +4849,12 @@ void GUI_App::on_http_error(wxCommandEvent &evt)
         return;
     }
 
+    static bool m_show_api_error = false;
     // Show general error notification for Orca Cloud API failures (not Bambu)
     if (provider == ORCA_CLOUD_PROVIDER && status >= 400 && code != HttpErrorVersionLimited) {
-        if (m_show_http_error_msgdlg)
+        if (m_show_api_error)
             return;
-        m_show_http_error_msgdlg = true;
+        m_show_api_error = true;
 
         wxString msg;
         if (!error.empty()) {
@@ -4862,7 +4863,6 @@ void GUI_App::on_http_error(wxCommandEvent &evt)
             msg = wxString::Format(_L("API error (HTTP %u)"), status);
         }
         wxMessageBox(msg, _L("Orca Cloud API Error"), wxOK | wxICON_ERROR, wxGetApp().mainframe);
-        m_show_http_error_msgdlg = false;
     }
 }
 
