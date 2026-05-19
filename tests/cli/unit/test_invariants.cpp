@@ -1,6 +1,8 @@
 // OrcaSlicer vendors Catch2 v3; umbrella header is catch_all.hpp.
 #include <catch2/catch_all.hpp>
 #include "invariants.hpp"
+#include "io.hpp"
+#include "../test_common.hpp"
 #include <cstring>
 #include <vector>
 
@@ -57,4 +59,21 @@ TEST_CASE("orca-cli: verify_plate_thumbnails throws when small_png is missing",
         { "Metadata/plate_1.png", std::vector<char>(8, '\x89') },
     };
     REQUIRE_THROWS_AS(verify_plate_thumbnails(entries), InvariantViolation);
+}
+
+TEST_CASE("orca-cli: verify_vector_config_roundtrip passes on reference 3mf",
+          "[orca-cli][P1][unit][needs-ref]") {
+    using namespace orca_cli_test;
+    if (ref_3mf().empty()) {
+        SUCCEED("Skipped: reference 3mf not on host");
+        return;
+    }
+    auto tmp   = make_temp_dir();
+    auto out   = (tmp / "vectorcheck.3mf").string();
+    auto state = orca_cli::load_project(ref_3mf().string());
+    // save_project itself now calls run_all_invariants, including this very
+    // check, so a green test here doubles as confirmation that the wired-in
+    // guard does not false-positive.
+    orca_cli::save_project(state, out);
+    REQUIRE_NOTHROW(orca_cli::verify_vector_config_roundtrip(state, out));
 }

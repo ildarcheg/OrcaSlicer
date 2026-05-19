@@ -1,11 +1,44 @@
 #include "invariants.hpp"
+#include "io.hpp"
 
 #include <libslic3r/miniz_extension.hpp>
+#include <libslic3r/Config.hpp>
+#include <libslic3r/PrintConfig.hpp>
 
 #include <regex>
 #include <unordered_set>
 
 namespace orca_cli {
+
+namespace {
+// Type-driven vector-config check (per spec section 2, check 3). We iterate
+// every option in print_config_def and consider it "vector-typed" if its
+// declared ConfigOptionType is one of the coXxxs variants. This avoids the
+// brittleness of a hardcoded key allow-list: any new vector key added to
+// PrintConfig.cpp gets covered automatically.
+bool is_vector_type(Slic3r::ConfigOptionType t) {
+    using namespace Slic3r;
+    switch (t) {
+        case coFloats:
+        case coInts:
+        case coStrings:
+        case coPercents:
+        case coFloatsOrPercents:
+        case coPoints:
+        case coBools:
+        case coEnums:
+        // coPoint3 is a single 3d point; coPointsGroups / coIntsGroups are
+        // already vector_type by virtue of being | coVectorType. We list
+        // them explicitly so future readers don't have to chase the bit
+        // arithmetic.
+        case coPointsGroups:
+        case coIntsGroups:
+            return true;
+        default:
+            return false;
+    }
+}
+} // namespace
 
 std::vector<ZipEntry> unzip_to_memory(const std::string& zip_path)
 {
@@ -90,6 +123,57 @@ void verify_plate_thumbnails(const std::vector<ZipEntry>& entries)
     }
 }
 
-// verify_vector_config_roundtrip lands in Task 1.7.
+void verify_vector_config_roundtrip(const ProjectState& in_memory,
+                                    const std::string&  zip_path)
+{
+    using namespace Slic3r;
+
+    // Re-parse the just-written archive into a fresh ProjectState so we can
+    // compare every vector-typed project_config option against what was in
+    // RAM before the save. A mismatch means save_bbs_3mf lost or mutated
+    // information for that key on disk; that's the bug pattern we are
+    // guarding against.
+    const ProjectState loaded = load_project(zip_path);
+
+    for (const auto& kv : print_config_def.options) {
+        const std::string&     key = kv.first;
+        const ConfigOptionDef& def = kv.second;
+        if (!is_vector_type(def.type)) continue;
+
+        const ConfigOption* a = in_memory.project_config->option(key);
+        const ConfigOption* b = loaded   .project_config->option(key);
+
+        // Both sides absent -> nothing to compare. Common case: project did
+        // not set this option at all.
+        if (a == nullptr && b == nullptr) continue;
+
+        if ((a == nullptr) != (b == nullptr)) {
+            throw InvariantViolation(
+                "vector key " + key +
+                " present in one side only after roundtrip");
+        }
+
+        // Cheap, stable comparison via the same serialization the on-disk
+        // format uses. Avoids having to dispatch on every concrete vector
+        // type.
+        const std::string sa = a->serialize();
+        const std::string sb = b->serialize();
+        if (sa != sb) {
+            throw InvariantViolation(
+                "vector key " + key + " differs after roundtrip:\n"
+                "  in-memory: " + sa + "\n"
+                "  saved:     " + sb);
+        }
+    }
+}
+
+void run_all_invariants(const ProjectState& in_memory,
+                        const std::string&  zip_path)
+{
+    auto entries = unzip_to_memory(zip_path);
+    verify_relationships(entries);
+    verify_plate_thumbnails(entries);
+    verify_vector_config_roundtrip(in_memory, zip_path);
+}
 
 } // namespace orca_cli
