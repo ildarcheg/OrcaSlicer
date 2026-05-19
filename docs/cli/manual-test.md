@@ -144,3 +144,35 @@ Anti-cases (each should exit non-zero with a clean message):
 & $CLI object add $OUT --plate T --stl "$STLS\000_01_test_cube.stl" --rotate 0,0
 # expected: exit 1 (usage_error - --rotate requires 3 components)
 ```
+
+## Phase 5 - object filaments
+
+The reference 3mf has 6 filament slots (Bambu PLA Basic @BBL A1 x6), so
+`--filament 1..6` are valid; `--filament 7+` are out of range.
+
+```powershell
+$OUT = "$env:TEMP\orca-cli-p5.3mf"
+Copy-Item $REF $OUT -Force
+& $CLI plate  add $OUT --name F
+& $CLI object add $OUT --plate F --stl "$STLS\000_01_test_cube.stl" --name cube1 --filament 1
+& $CLI object add $OUT --plate F --stl "$STLS\000_01_test_cube.stl" --name cube2
+& $CLI object set-filament $OUT --name cube2 --filament 2
+```
+
+Expected: in OrcaSlicer's object panel, `cube1` is assigned to filament
+slot 1 and `cube2` to slot 2; both render normally on plate `F`. Bug C
+defense -- source attribution holds even when `--filament` writes
+per-object extruder, so neither cube is silently dropped on GUI open.
+
+Anti-cases (each should exit non-zero with a clean message):
+
+```powershell
+& $CLI object add $OUT --plate F --stl "$STLS\000_01_test_cube.stl" --filament 99 --name bad
+# expected: exit 6 (unknown_reference - filament slot out of range)
+
+& $CLI object set-filament $OUT --name cube1 --filament 0
+# expected: exit 6 (unknown_reference - slot < 1 also out of range)
+
+& $CLI object set-filament $OUT --name ghost --filament 1
+# expected: exit 6 (unknown_reference - object name not found)
+```

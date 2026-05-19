@@ -139,3 +139,37 @@ Updated by each phase.
       (--scale 2) at (120,60), `spun` (--rotate 0,0,0.7854) at
       (90,120) -- all visible and slicing cleanly. (Pending separate
       manual verification per `docs/cli/manual-test.md` -> Phase 4.)
+
+## Phase 5 - object filaments
+
+- [x] `AddObjectParams` extended with `std::optional<int> filament_slot`.
+      When set, `add_object` delegates to `set_object_filament` after
+      instance placement so the validation path is identical between
+      `object add --filament` and `object set-filament`.
+- [x] `set_object_filament(state, name, slot)` in `project_ops.cpp`
+      stamps `extruder = slot` on the named ModelObject's
+      `ModelConfigObject` (same call shape used by libslic3r's MMU
+      gizmo and `GUI_ObjectList`). Validates `1 <= slot <=
+      filament_settings_id.size()` and throws `std::out_of_range`
+      on either out-of-range slot OR unknown object -- the command
+      layer maps both to `ExitCode::unknown_reference` (exit 6).
+- [x] `--filament N` flag added to `object add`; new
+      `object set-filament <file> --name M --filament N [--output O]`
+      subcommand registered in `commands/object.cpp`. Slot 0 is the
+      CLI11 "unset" sentinel on `object add` (1-based, so any real
+      slot is >=1); explicit 0 / negative values forwarded to the
+      validator surface the same exit-6 error a user would see from
+      `set-filament`.
+- [x] e2e: `archive_invariants::assert_object_extruder` activated.
+      Bug C lock-in: `object add --filament 2 ... && assert_object_
+      extruder(in, "cube_f2", 2) && assert_parts_have_source_file(in)`
+      runs in the same test case so source_file presence is pinned
+      against any future regression that would drop it on the
+      filament-assigned object. Roundtrip test confirms the
+      per-object `extruder` value survives load/save.
+- [x] All P0-P4 tests still pass (regression check).
+- [ ] Manual GUI smoke: open the P5 manual-test output in OrcaSlicer
+      and verify `cube1` is on filament slot 1 and `cube2` on slot 2
+      in the object panel; both render and slice normally on plate F.
+      (Pending separate manual verification per
+      `docs/cli/manual-test.md` -> Phase 5.)
