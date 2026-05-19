@@ -138,7 +138,7 @@ Atomic copy of `<ref>` to `<out>` (`out.3mf.tmp` + rename). Then runs the pipeli
 
 | Sub | Mutation |
 |---|---|
-| `add --name X [--output O]` | Append `PlateData`, generate placeholder `plate_N.png` and `plate_N_small.png` (128×128 transparent PNG) so G3 holds. Duplicate name → exit 5. |
+| `add --name X [--output O]` | Append `PlateData`, generate placeholder `plate_N.png` and `plate_N_small.png` (128×128 **gray RGBA 0xC0 PNG** — every pixel R = G = B = A = 0xC0) so G3 holds. Matches the sister `bambu-cli` project's choice (its v1.2 retrospective showed some renderer paths handled gray more reliably than fully transparent); strictly more conservative than transparent and costs nothing. Duplicate name → exit 5. |
 | `remove --name X [--output O]` | Remove by name; re-index trailing plates; drop their PNGs. Removing the only plate → exit 7. |
 | `rename --from <old> --to <new> [--output O]` | Validate `<old>` exists (else exit 6); reject if `<new>` collides with another plate (exit 5). Update the plate's name field only; do **not** re-index, do **not** rename PNGs. Plate `N` keeps its `plate_N.png` / `plate_N_small.png`. |
 | `list` | Print plates and object counts. No save. Rejects `--output` (exit 1). |
@@ -338,7 +338,7 @@ The implementation runs as a sequence of subagents (Agent tool, `general-purpose
 |---|---|---|
 | S0 | `scaffold` | New CMake target `orca-cli`; vendored CLI11; `main.cpp` with `--help` and `--version`; `globals.cpp`; `output.cpp` with `ExitCode` + JSON formatter; empty `commands/`; CMake target `cli_tests`; Catch2 wired; one trivial e2e test (`orca-cli --version` returns 0). |
 | S1 | `project-init` | `commands/project_init.cpp`; `io.cpp` (load_project, save_project skeleton); `invariants.cpp` (all 3 guards); round-trip + e2e tests; manual smoke section #1 (clone-and-mutate, no mutation). |
-| S2 | `plate-ops` | `commands/plate.cpp` (add/remove/list); placeholder PNG generator; `project_ops` plate functions; tests; manual smoke section #2. |
+| S2 | `plate-ops` | `commands/plate.cpp` (add/remove/rename/list); placeholder PNG generator (128×128 gray RGBA 0xC0); `project_ops` plate functions; tests; manual smoke section #2. |
 | S3 | `object-add` | `commands/object.cpp` (add/list/remove, auto-place only); `placement.cpp` grid fallback; STL loader; tests; manual smoke section #3. |
 | S4 | `object-transforms` | `--translate`/`--rotate`/`--scale` on `object add`; off-bed check; tests; manual smoke section #4. |
 | S5 | `object-filaments` | `object add --filament N`; `object set-filament`; slot validation; tests; manual smoke section #5. |
@@ -384,7 +384,7 @@ The retrospective enumerates 9 shared gotchas plus two latent save-path bugs. A 
 |---|---|---|
 | G1 | `LoadStrategy::Default = 0` skips model AND config | `io.cpp::load_project` always passes `LoadModel \| LoadConfig` |
 | G2 | `objects_and_instances` not populated on load | `io.cpp::load_project` rebuilds from `obj_inst_map` ↔ `loaded_id` |
-| G3 | Thumbnail relationships unconditional | Invariant guard check #1 + placeholder PNG generator in plate add |
+| G3 | Thumbnail relationships unconditional | Invariant guard check #1 + placeholder PNG generator (128×128 gray RGBA 0xC0) in plate add |
 | G4 | `filament_colour` / `extruder_variant` patches damage loaded projects | Not needed — no synthesize path means no patches |
 | G5 | `arrangement::arrange` returns UNARRANGED headlessly | `placement.cpp` deterministic grid fallback |
 | G6 | `coEnums` `default_value->serialize()` crashes | `config list --changed-only` uses `DynamicPrintConfig::diff` |
@@ -392,7 +392,7 @@ The retrospective enumerates 9 shared gotchas plus two latent save-path bugs. A 
 | G8 | ctest mangles non-ASCII test names on Windows | ASCII `->` convention |
 | G9 | `--file` collides with CLI11 + MSVC /GS | `--stl` everywhere |
 | Bug A | `apply_preset_kvs` separator mismatch | Not reachable — no preset overrides in v1 surface |
-| Bug B | Dangling small-thumbnail relationship | Invariant guard check #1 + placeholder PNG for new plates |
+| Bug B | Dangling small-thumbnail relationship | Invariant guard check #1 + placeholder PNG (128×128 gray RGBA 0xC0) for new plates |
 | Bug C | Missing `source_file` on `<part>` → some GUIs silently drop the object (failure compounds with `extruder = N`) | `object add` stamps `vol->source.{input_file, object_idx, volume_idx}` on every added volume; e2e archive check #4 asserts `source_file` present on every `<part>` in `Metadata/model_settings.config` |
 
 ## 9. Open questions deferred to v2+
