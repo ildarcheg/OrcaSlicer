@@ -7,6 +7,8 @@ add_executable(orca-cli
     main.cpp
     globals.cpp
     output.cpp
+    io.cpp
+    project_ops.cpp
 )
 
 target_include_directories(orca-cli PRIVATE
