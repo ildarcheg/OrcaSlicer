@@ -46,3 +46,30 @@ Anti-cases (each should exit non-zero with a clean message):
 & $CLI project init    # no positional arg or --template
 # expected: exit 109 (CLI11 parse error), prints CLI11 usage to stderr
 ```
+
+## Phase 2 - plate ops
+
+```powershell
+$OUT = "$env:TEMP\orca-cli-p2.3mf"
+Copy-Item $REF $OUT -Force
+& $CLI plate add    $OUT --name Brackets
+& $CLI plate add    $OUT --name Auxiliary
+& $CLI plate rename $OUT --from Auxiliary --to Spares
+& $CLI plate list   $OUT
+& $CLI plate add    $OUT --name Sidecar --output "$env:TEMP\orca-cli-p2-side.3mf"
+```
+
+Expected: `$OUT` has plates `Brackets` and `Spares` (renamed); the side-car file `...-p2-side.3mf` additionally has `Sidecar`. Both files open in OrcaSlicer with all plates visible and named correctly in the plate switcher. New plates show the 128x128 gray placeholder thumbnail in the plate panel.
+
+Anti-cases (each should exit non-zero with a clean message):
+
+```powershell
+& $CLI plate add    $OUT --name Brackets         # duplicate
+# expected: exit 5 (duplicate_name)
+
+& $CLI plate rename $OUT --from missing --to X   # unknown from
+# expected: exit 6 (unknown_reference)
+
+& $CLI plate list   $OUT --output anywhere.3mf   # --output not allowed on list
+# expected: exit 1 (usage_error)
+```
