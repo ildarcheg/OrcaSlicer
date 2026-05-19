@@ -1,5 +1,6 @@
 #include "io.hpp"
 #include "invariants.hpp"
+#include "png_placeholder.hpp"
 
 #include <libslic3r/Format/bbs_3mf.hpp>
 #include <libslic3r/Semver.hpp>
@@ -32,24 +33,34 @@ namespace {
 // present and falls back gracefully when absent, so they are safe to copy
 // through and improve fidelity for the clone-and-mutate flow.
 //
-// This function is a no-op when:
-//   * the state was constructed in memory (source_path empty);
-//   * the source path no longer exists on disk;
-//   * the source archive cannot be opened (best-effort).
+// When a plate exists in the project that does NOT have a corresponding
+// PNG entry in either the target or the source (i.e. a plate created by
+// `plate add` -- there is no source PNG to copy through), we inject a
+// 128x128 gray placeholder PNG (orca_cli::make_placeholder_png_128_gray_C0)
+// for both Metadata/plate_<n>.png and Metadata/plate_<n>_small.png. This
+// keeps the runtime invariant guard (verify_plate_thumbnails + the
+// dangling-relationships check) happy without forcing the CLI to render.
+//
+// This function falls through (no rewrite) when:
+//   * the target archive cannot be opened (best-effort);
+//   * there is nothing to copy from source AND no placeholder injections
+//     are required.
 //
 // The output archive is rewritten in place: we open it as a reader, build a
-// list of entries to keep + entries to copy from source, then write a new
-// archive at the same path. miniz lacks a robust in-place append API for
-// arbitrary zip files (`mz_zip_writer_init_from_reader` requires the source
-// to be writable and has alignment constraints we cannot rely on).
-void passthrough_missing_thumbnails(const std::string& target_zip_path,
-                                    const std::string& source_zip_path)
+// list of entries to keep + entries to copy from source + entries to
+// synthesize, then write a new archive at the same path. miniz lacks a
+// robust in-place append API for arbitrary zip files
+// (`mz_zip_writer_init_from_reader` requires the source to be writable
+// and has alignment constraints we cannot rely on).
+void passthrough_missing_thumbnails(const ProjectState& s,
+                                    const std::string&  target_zip_path)
 {
     using namespace Slic3r;
     namespace fs = boost::filesystem;
 
-    if (source_zip_path.empty() || !fs::exists(source_zip_path))
-        return;
+    const std::string& source_zip_path = s.source_path;
+    const bool has_source =
+        !source_zip_path.empty() && fs::exists(source_zip_path);
 
     // Pattern for files that store_bbs_3mf references via .rels but does not
     // emit unless thumbnail_data is provided in StoreParams. Plate-numbered
@@ -74,38 +85,61 @@ void passthrough_missing_thumbnails(const std::string& target_zip_path,
         target_entries.insert(name);
     }
 
-    // Open source as reader to find missing-but-present thumbnail blobs.
-    mz_zip_archive src_reader{};
-    if (!open_zip_reader(&src_reader, source_zip_path)) {
-        close_zip_reader(&tgt_reader);
-        return;
-    }
-
-    // Collect (source_index, name) pairs we want to add to the target.
+    // Plan source-copy: collect (source_index, name) pairs for thumbnail
+    // blobs present in source but missing in target. Best-effort -- if the
+    // source archive cannot be opened, we just skip the copy phase and
+    // proceed to placeholder injection (which is what `plate add` on an
+    // in-memory ProjectState needs anyway).
     struct PendingCopy { mz_uint src_index; std::string name; };
     std::vector<PendingCopy> to_copy;
-    const mz_uint src_count = mz_zip_reader_get_num_files(&src_reader);
-    for (mz_uint i = 0; i < src_count; ++i) {
-        mz_zip_archive_file_stat st;
-        if (!mz_zip_reader_file_stat(&src_reader, i, &st)) continue;
-        if (st.m_is_directory)                             continue;
-        std::string name(st.m_filename);
-        std::replace(name.begin(), name.end(), '\\', '/');
-        if (!std::regex_match(name, thumbnail_re)) continue;
-        if (target_entries.find(name) != target_entries.end()) continue;
-        to_copy.push_back({i, std::move(name)});
+    mz_zip_archive src_reader{};
+    bool src_opened = false;
+    if (has_source && open_zip_reader(&src_reader, source_zip_path)) {
+        src_opened = true;
+        const mz_uint src_count = mz_zip_reader_get_num_files(&src_reader);
+        for (mz_uint i = 0; i < src_count; ++i) {
+            mz_zip_archive_file_stat st;
+            if (!mz_zip_reader_file_stat(&src_reader, i, &st)) continue;
+            if (st.m_is_directory)                             continue;
+            std::string name(st.m_filename);
+            std::replace(name.begin(), name.end(), '\\', '/');
+            if (!std::regex_match(name, thumbnail_re)) continue;
+            if (target_entries.find(name) != target_entries.end()) continue;
+            to_copy.push_back({i, std::move(name)});
+        }
     }
 
-    if (to_copy.empty()) {
-        close_zip_reader(&src_reader);
+    // Plan placeholder injections: for every plate index 1..plates.size(),
+    // if neither the target nor the source-copy plan covers
+    // Metadata/plate_<n>.png and Metadata/plate_<n>_small.png, synthesize a
+    // 128x128 gray placeholder. Plate numbering is 1-based on disk (see
+    // verify_plate_thumbnails / store_bbs_3mf).
+    std::unordered_set<std::string> planned_copy_names;
+    planned_copy_names.reserve(to_copy.size());
+    for (const auto& c : to_copy) planned_copy_names.insert(c.name);
+
+    std::vector<std::string> to_synthesize;
+    for (size_t i = 1; i <= s.plates.size(); ++i) {
+        const std::string mid  = "Metadata/plate_" + std::to_string(i) + ".png";
+        const std::string small = "Metadata/plate_" + std::to_string(i) + "_small.png";
+        for (const std::string& name : {mid, small}) {
+            if (target_entries.count(name))     continue;
+            if (planned_copy_names.count(name)) continue;
+            to_synthesize.push_back(name);
+        }
+    }
+
+    if (to_copy.empty() && to_synthesize.empty()) {
+        if (src_opened) close_zip_reader(&src_reader);
         close_zip_reader(&tgt_reader);
         return;
     }
 
     // Rewrite the target archive: copy every existing entry, then append the
-    // missing thumbnail blobs from source. We close the target reader after
-    // we are done reading; for the rewrite phase we read into memory then
-    // re-emit. This is fine for project files in the MB range.
+    // missing thumbnail blobs from source, then append synthesized
+    // placeholders. We close the target reader after we are done reading;
+    // for the rewrite phase we read into memory then re-emit. This is fine
+    // for project files in the MB range.
     std::vector<std::pair<std::string, std::vector<unsigned char>>> tgt_blobs;
     tgt_blobs.reserve(tgt_count);
     for (mz_uint i = 0; i < tgt_count; ++i) {
@@ -122,17 +156,27 @@ void passthrough_missing_thumbnails(const std::string& target_zip_path,
 
     std::vector<std::pair<std::string, std::vector<unsigned char>>> src_blobs;
     src_blobs.reserve(to_copy.size());
-    for (const auto& c : to_copy) {
-        mz_zip_archive_file_stat st;
-        if (!mz_zip_reader_file_stat(&src_reader, c.src_index, &st)) continue;
-        std::vector<unsigned char> bytes(static_cast<size_t>(st.m_uncomp_size));
-        if (!mz_zip_reader_extract_to_mem(&src_reader, c.src_index, bytes.data(), bytes.size(), 0))
-            continue;
-        src_blobs.emplace_back(c.name, std::move(bytes));
+    if (src_opened) {
+        for (const auto& c : to_copy) {
+            mz_zip_archive_file_stat st;
+            if (!mz_zip_reader_file_stat(&src_reader, c.src_index, &st)) continue;
+            std::vector<unsigned char> bytes(static_cast<size_t>(st.m_uncomp_size));
+            if (!mz_zip_reader_extract_to_mem(&src_reader, c.src_index, bytes.data(), bytes.size(), 0))
+                continue;
+            src_blobs.emplace_back(c.name, std::move(bytes));
+        }
     }
 
-    close_zip_reader(&src_reader);
+    if (src_opened) close_zip_reader(&src_reader);
     close_zip_reader(&tgt_reader);
+
+    // Build the placeholder PNG bytes once and reuse for every synthesized
+    // entry. Both plate_N.png and plate_N_small.png get the same 128x128
+    // gray placeholder; the GUI may render the same image at two sizes but
+    // will not fail to load or crash. This is acceptable for v1.
+    std::vector<char> placeholder;
+    if (!to_synthesize.empty())
+        placeholder = make_placeholder_png_128_gray_C0();
 
     // Rewrite the archive. Use the libslic3r helper so we honor the same
     // UTF-8 path conventions store_bbs_3mf used.
@@ -150,6 +194,11 @@ void passthrough_missing_thumbnails(const std::string& target_zip_path,
     for (const auto& kv : src_blobs) {
         mz_zip_writer_add_mem(&writer, kv.first.c_str(),
                               kv.second.data(), kv.second.size(),
+                              MZ_NO_COMPRESSION); // PNG is already compressed
+    }
+    for (const std::string& name : to_synthesize) {
+        mz_zip_writer_add_mem(&writer, name.c_str(),
+                              placeholder.data(), placeholder.size(),
                               MZ_NO_COMPRESSION); // PNG is already compressed
     }
     mz_zip_writer_finalize_archive(&writer);
@@ -285,7 +334,7 @@ void save_project(const ProjectState& s, const std::string& target_path)
     // a CLI that does not render, the realistic source of those bytes is the
     // input archive itself, and the clone-and-mutate flow ensures the source
     // remains valid.
-    passthrough_missing_thumbnails(tmp_path, s.source_path);
+    passthrough_missing_thumbnails(s, tmp_path);
 
     // Run runtime invariant guards on the .tmp BEFORE renaming over the
     // destination. If any check fails, remove the .tmp and propagate so the
