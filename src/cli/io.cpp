@@ -155,15 +155,32 @@ void passthrough_missing_thumbnails(const std::string& target_zip_path,
     mz_zip_writer_finalize_archive(&writer);
     close_zip_writer(&writer);
 
+    // Atomic rename-swap: rename target -> .bak, rename rewrite -> target,
+    // remove .bak. If anything fails midway, restore the original via the .bak
+    // so we never end up with the target file missing on disk. The previous
+    // remove+rename sequence could lose the .tmp file on a rare
+    // rename-failure path and produce a misleading "cannot open archive"
+    // error downstream from run_all_invariants.
+    const fs::path bak = fs::path(target_zip_path + ".bak");
     boost::system::error_code ec;
-    fs::remove(target_zip_path, ec);
+    fs::rename(target_zip_path, bak, ec);
+    if (ec) {
+        // Couldn't even start the swap -- abort the passthrough cleanly.
+        boost::system::error_code ec2;
+        fs::remove(rewrite_path, ec2);
+        throw InvariantViolation(
+            "thumbnail passthrough rewrite-swap failed (could not rename target): " + ec.message());
+    }
     fs::rename(rewrite_path, target_zip_path, ec);
     if (ec) {
-        // If the rename failed, leave the original target in place and clean
-        // up the rewrite. Better to skip the passthrough than to lose the
-        // archive entirely.
-        fs::remove(rewrite_path, ec);
+        // Restore the original so we don't lose data.
+        boost::system::error_code ec2;
+        fs::rename(bak, target_zip_path, ec2);
+        fs::remove(rewrite_path, ec2);
+        throw InvariantViolation(
+            "thumbnail passthrough rewrite-swap failed (could not install rewrite): " + ec.message());
     }
+    fs::remove(bak, ec);
 }
 
 } // namespace

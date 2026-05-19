@@ -25,6 +25,12 @@ struct ProjectState {
     // clone-and-mutate flows like `project init` we just want to pass these
     // blobs through verbatim so the resulting archive's relationships file
     // does not dangle. See save_project() in src/cli/io.cpp.
+    //
+    // LIFETIME CONTRACT: the file at source_path must remain readable
+    // between load_project and save_project -- the thumbnail passthrough
+    // re-opens the source archive to copy plate PNGs forward. If the source
+    // is deleted, save_project will produce an archive that fails the
+    // runtime invariant guard with a dangling-relationship error.
     std::string source_path;
 
     // View suitable for passing to libslic3r APIs that take PlateDataPtrs.
