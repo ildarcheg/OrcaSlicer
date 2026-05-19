@@ -12,6 +12,7 @@ add_library(orca_cli_core STATIC
     project_ops.cpp
     invariants.cpp
     nanosvg_impl.cpp
+    commands/project_init.cpp
 )
 
 target_include_directories(orca_cli_core PUBLIC
