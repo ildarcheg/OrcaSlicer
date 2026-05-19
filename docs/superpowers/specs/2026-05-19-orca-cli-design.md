@@ -36,6 +36,8 @@ orca-cli config set out.3mf --object part --key wall_loops --value 4
 
 **Save-side invariant guard.** After every `store_bbs_3mf`, the CLI re-opens the produced .3mf as a zip and runs three checks. Failures abort the save (output deleted, exit 8). This is the primary defense against the v1.2 failure mode — Bug B (dangling small-thumbnail relationship) passed all 60 tests but crashed the GUI because nothing verified zip-integrity vs declared relationships.
 
+**Implementation note on the relationship check + clone-and-mutate flow:** `store_bbs_3mf` always emits `<Relationship>` entries for plate thumbnails but only writes the PNG bodies when given decoded `StoreParams::thumbnail_data` or a real on-disk `PlateData::thumbnail_file`. For the clone-and-mutate path (`project init` and downstream mutations) the CLI's `save_project` therefore runs a **thumbnail passthrough** before the invariant guard: plate-numbered PNG entries from the source archive are copied forward into the `.tmp` archive so the relationship targets actually resolve. This means the relationship check only protects against truly novel dangling references (e.g. when a new plate's placeholder is dropped) — the source-archive case is closed by construction. Once `plate add` lands in P2, the in-tree placeholder PNG generator must populate `StoreParams::thumbnail_data` (or write to disk and point `thumbnail_file` at it) so newly-created plates also satisfy the relationship target. Until then, the runtime guard's full strength applies only to plates inherited from the template.
+
 The three checks:
 1. Every `<Relationship>` Target declared in `_rels/.rels` and any `*.rels` file resolves to an entry that exists in the archive.
 2. Every plate `N` has both `Metadata/plate_N.png` and `Metadata/plate_N_small.png`.
@@ -250,7 +252,7 @@ No `--force`. No `--allow-broken`. If an invariant fails, the user fixes the inp
 **E2E archive-level invariants** (new, complements the runtime invariant guard — does not replace it). For each e2e, after the CLI exits 0, the test harness unzips the produced 3mf to a temp dir and asserts:
 1. `Metadata/project_settings.config` parses as valid XML.
 2. If `printable_area` is present in `Metadata/project_settings.config`, it carries exactly 4 points (catches Bug A's class at the archive level).
-3. For every plate `N`, both `Metadata/plate_N.png` and `Metadata/plate_N_small.png` exist in the archive and decode to a 128×128 image.
+3. For every plate `N`, both `Metadata/plate_N.png` and `Metadata/plate_N_small.png` exist in the archive. Only the `_small.png` is asserted to be 128×128 (`PLATE_THUMBNAIL_SMALL_*` in `bbs_3mf.hpp`). The regular `plate_N.png` is 512×512 (`plate_thumbnail_width/height` in `PartPlate.hpp`) when authored by the GUI; we don't pin it because CLI-generated placeholders may differ in resolution between phases.
 4. Every `<part>` block in `Metadata/model_settings.config` carries a `source_file` attribute (enforces the source-attribution requirement from § 4.3 and § 8).
 5. For every object added with `--filament N`, the corresponding object's `extruder` setting in `Metadata/model_settings.config` equals `N`.
 
