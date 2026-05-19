@@ -64,16 +64,42 @@ void passthrough_missing_thumbnails(const ProjectState& s,
 
     // Pattern for files that store_bbs_3mf references via .rels but does not
     // emit unless thumbnail_data is provided in StoreParams. Plate-numbered
-    // PNG blobs only.
+    // PNG blobs only. The first capture group is the trailing integer N
+    // (1-based plate number on disk); we use it to skip orphaned entries
+    // whose N exceeds the current plate count (spec section 4.2: plate
+    // remove must "drop their PNGs").
     static const std::regex thumbnail_re(
-        R"(^Metadata/(plate_\d+(_small)?|plate_no_light_\d+|top_\d+|pick_\d+)\.png$)");
+        R"(^Metadata/(?:plate_(\d+)(?:_small)?|plate_no_light_(\d+)|top_(\d+)|pick_(\d+))\.png$)");
+    const int plate_count = static_cast<int>(s.plates.size());
+
+    // Returns true if `name` is a plate-numbered thumbnail whose trailing
+    // integer N exceeds the current plate count -- i.e. an orphan left over
+    // from a `plate remove`. Spec section 4.2 requires we drop it.
+    auto is_orphan_plate_png = [&](const std::string& name) {
+        std::smatch m;
+        if (!std::regex_match(name, m, thumbnail_re)) return false;
+        for (size_t g = 1; g < m.size(); ++g) {
+            if (m[g].matched) {
+                try {
+                    return std::stoi(m[g].str()) > plate_count;
+                } catch (...) { return false; }
+            }
+        }
+        return false;
+    };
 
     // Open target as reader to enumerate existing entries.
     mz_zip_archive tgt_reader{};
     if (!open_zip_reader(&tgt_reader, target_zip_path))
         return;
 
+    // Note: we intentionally record orphan plate PNG names found in the
+    // target into a separate set so we can both
+    //   (a) avoid carrying them forward in the rewrite phase, and
+    //   (b) keep them out of `target_entries` for to_synthesize / to_copy
+    //       planning, since those orphan slots will be removed.
     std::unordered_set<std::string> target_entries;
+    std::unordered_set<std::string> target_orphans;
     const mz_uint tgt_count = mz_zip_reader_get_num_files(&tgt_reader);
     target_entries.reserve(tgt_count);
     for (mz_uint i = 0; i < tgt_count; ++i) {
@@ -82,6 +108,10 @@ void passthrough_missing_thumbnails(const ProjectState& s,
         if (st.m_is_directory)                             continue;
         std::string name(st.m_filename);
         std::replace(name.begin(), name.end(), '\\', '/');
+        if (is_orphan_plate_png(name)) {
+            target_orphans.insert(name);
+            continue;
+        }
         target_entries.insert(name);
     }
 
@@ -104,6 +134,9 @@ void passthrough_missing_thumbnails(const ProjectState& s,
             std::string name(st.m_filename);
             std::replace(name.begin(), name.end(), '\\', '/');
             if (!std::regex_match(name, thumbnail_re)) continue;
+            // Spec section 4.2: a plate that no longer exists in
+            // ProjectState must not have its PNGs carried forward.
+            if (is_orphan_plate_png(name)) continue;
             if (target_entries.find(name) != target_entries.end()) continue;
             to_copy.push_back({i, std::move(name)});
         }
@@ -129,7 +162,7 @@ void passthrough_missing_thumbnails(const ProjectState& s,
         }
     }
 
-    if (to_copy.empty() && to_synthesize.empty()) {
+    if (to_copy.empty() && to_synthesize.empty() && target_orphans.empty()) {
         if (src_opened) close_zip_reader(&src_reader);
         close_zip_reader(&tgt_reader);
         return;
@@ -146,11 +179,15 @@ void passthrough_missing_thumbnails(const ProjectState& s,
         mz_zip_archive_file_stat st;
         if (!mz_zip_reader_file_stat(&tgt_reader, i, &st)) continue;
         if (st.m_is_directory)                             continue;
+        std::string name(st.m_filename);
+        std::replace(name.begin(), name.end(), '\\', '/');
+        // Drop orphan plate-numbered PNGs (spec section 4.2: plate remove
+        // must drop their PNGs). These are entries whose trailing integer
+        // N exceeds the current plate count.
+        if (target_orphans.count(name)) continue;
         std::vector<unsigned char> bytes(static_cast<size_t>(st.m_uncomp_size));
         if (!mz_zip_reader_extract_to_mem(&tgt_reader, i, bytes.data(), bytes.size(), 0))
             continue;
-        std::string name(st.m_filename);
-        std::replace(name.begin(), name.end(), '\\', '/');
         tgt_blobs.emplace_back(std::move(name), std::move(bytes));
     }
 
