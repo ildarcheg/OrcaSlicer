@@ -61,7 +61,7 @@ src/cli/
   cli11/CLI11.hpp             vendored header-only CLI11
   commands/
     project_init.{hpp,cpp}    `project init <out> --template <ref>`
-    plate.{hpp,cpp}           `plate add|remove|list`
+    plate.{hpp,cpp}           `plate add|remove|rename|list`
     object.{hpp,cpp}          `object add|set-filament|list|remove`
     config.{hpp,cpp}          `config set|unset|list [--object N]`
     inspect.{hpp,cpp}         `inspect <file>` — debug aid
@@ -97,15 +97,18 @@ Every command follows the same five-stage pipeline:
 
 ```
 arg parse + validation (CLI11)
-  -> load_project (LoadModel | LoadConfig, rebuild objects_and_instances)
+  -> resolve save target:
+        --output <out.3mf> supplied -> save_target = <out.3mf>; leave <file> untouched
+        --output omitted             -> save_target = <file>          (in-place mutation)
+  -> load_project(<file>) with LoadModel | LoadConfig, rebuild objects_and_instances
   -> pure mutation in project_ops
-  -> save_project: write to out.3mf.tmp; store_bbs_3mf; rename on success
-  -> invariant guard: relationships, thumbnails, vector roundtrip
+  -> save_project(save_target): write to <save_target>.tmp; store_bbs_3mf; rename on success
+  -> invariant guard on <save_target>: relationships, thumbnails, vector roundtrip
         pass -> print_ok / exit 0
-        fail -> delete out.3mf.tmp; exit 8 invariant_violation
+        fail -> delete <save_target>.tmp; exit 8 invariant_violation
 ```
 
-The split exists so most logic is pure and testable without touching disk.
+The split exists so most logic is pure and testable without touching disk. The `--output` flag is applicable to every mutating command (see § 4); read-only commands (`*` `list`, `inspect`) reject it as a usage error.
 
 ### 3.4 Out of scope, by design
 
@@ -121,38 +124,51 @@ The CLI will refuse / not implement:
 
 This section describes the **final v1 surface** — every flag and every command after S7 ships. The subagent sequence in § 7.1 layers these in incrementally (e.g. `--filament` on `object add` arrives in S5, not S3).
 
+**`--output <out.3mf>` flag.** Every mutating command (`plate add/remove/rename`, `object add/set-filament/remove`, `config set/unset`) accepts an optional `--output <out.3mf>`:
+- Omitted → mutate `<file>` in place via `<file>.tmp` + rename (current behavior).
+- Supplied → write the produced 3mf to `<out.3mf>` via `<out>.tmp` + rename; leave `<file>` untouched.
 
+The invariant guard runs against the produced file in both cases. Read-only commands (`plate list`, `object list`, `config list`, `inspect`) reject `--output` with exit 1 (`usage_error`). `project init` already takes its destination as the positional `<out>` argument and does not accept `--output`.
 
 ### 4.1 `project init <out> --template <ref>`
 
 Atomic copy of `<ref>` to `<out>` (`out.3mf.tmp` + rename). Then runs the pipeline (load → no mutation → save → verify). Verifying after a clone is what catches a *bad* template: if the user's reference fails the invariant guard, they learn it now rather than after their first feature command.
 
-### 4.2 `plate add|remove|list <file>`
+### 4.2 `plate add|remove|rename|list <file>`
 
 | Sub | Mutation |
 |---|---|
-| `add --name X` | Append `PlateData`, generate placeholder `plate_N.png` and `plate_N_small.png` (128×128 transparent PNG) so G3 holds. Duplicate name → exit 5. |
-| `remove --name X` | Remove by name; re-index trailing plates; drop their PNGs. Removing the only plate → exit 7. |
-| `list` | Print plates and object counts. No save. |
+| `add --name X [--output O]` | Append `PlateData`, generate placeholder `plate_N.png` and `plate_N_small.png` (128×128 transparent PNG) so G3 holds. Duplicate name → exit 5. |
+| `remove --name X [--output O]` | Remove by name; re-index trailing plates; drop their PNGs. Removing the only plate → exit 7. |
+| `rename --from <old> --to <new> [--output O]` | Validate `<old>` exists (else exit 6); reject if `<new>` collides with another plate (exit 5). Update the plate's name field only; do **not** re-index, do **not** rename PNGs. Plate `N` keeps its `plate_N.png` / `plate_N_small.png`. |
+| `list` | Print plates and object counts. No save. Rejects `--output` (exit 1). |
 
 ### 4.3 `object add|set-filament|list|remove <file>`
 
 | Sub | Mutation |
 |---|---|
-| `add --plate P --stl S [--filament N] [--translate x,y] [--rotate ax,ay,az] [--scale s\|sx,sy,sz] [--name M]` | Load STL via `Model::read_from_file`. Append `ModelObject`. Set `extruder = N` on `ModelObject::config` if `--filament` (G4 — only on per-object writes, not on synthesized projects, which we don't have). Apply transforms if any; otherwise place via deterministic per-plate grid (bed-min anchored, 10 mm margin). Append `(obj_idx, instance_idx)` to target plate's `objects_and_instances`. After transforms, the object's world-space AABB must fall within the target plate's printable area; otherwise exit 9. |
-| `set-filament --name M --filament N` | Validate N ≤ filament-slot count from `filament_settings_id` length. Set `extruder = N`. |
-| `list [--plate P]` | Print, no save. |
-| `remove --name M` | Reverse of add. Rebuild plate→object map. |
+| `add --plate P --stl S [--count N] [--filament N] [--translate x,y] [--rotate ax,ay,az] [--scale s\|sx,sy,sz] [--name M] [--output O]` | Load STL via `Model::read_from_file`. Append `ModelObject`. **Stamp source attribution on every `obj->add_volume(...)`** (see source-attribution paragraph below) — required to prevent the GUI silently dropping the object. Set `extruder = N` on `ModelObject::config` if `--filament` (G4 — only on per-object writes, not on synthesized projects, which we don't have). Apply transforms if any; then stack `--count N` (default 1) instances at the post-transform position. With `--count > 1` and no transforms, the deterministic per-plate grid fallback (bed-min anchored, 10 mm margin) places each of the N instances on the grid. Append `(obj_idx, instance_idx)` rows for every instance to target plate's `objects_and_instances`. After transforms, every instance's world-space AABB must fall within the target plate's printable area; otherwise exit 9. |
+| `set-filament --name M --filament N [--output O]` | Validate N ≤ filament-slot count from `filament_settings_id` length. Set `extruder = N`. |
+| `list [--plate P]` | Print, no save. Rejects `--output` (exit 1). |
+| `remove --name M [--output O]` | Reverse of add. Rebuild plate→object map. |
 
 `--stl` not `--file` to dodge G9 (CLI11 + MSVC /GS abort).
+
+**Source attribution (required on every `object add`).** Immediately after `obj->add_volume(...)`, the implementation sets:
+```cpp
+vol->source.input_file = stl_path;
+vol->source.object_idx = 0;
+vol->source.volume_idx = 0;
+```
+Without this stamp, the `<part>` blocks written into `Metadata/model_settings.config` lack a `source_file` attribute. The combination of `extruder = N` + missing source attribution is a known failure mode where some slicer GUIs silently drop the new object from the renderer. The e2e layer asserts the attribute is present (see § 6.1); the lesson is also recorded in § 8.
 
 ### 4.4 `config set|unset|list <file> [--object N]`
 
 | Sub | Mutation |
 |---|---|
-| `set --key K --value V [--object N]` | Validate K against `print_config_def`. With `--object`: write to `ModelObject::config`. Without: write to `project_config`. Type-aware joiner on vector values (Bug A). |
-| `unset --key K [--object N]` | Erase the option from the right target. |
-| `list [--object N] [--changed-only]` | Read-only; no save. `--changed-only` uses `DynamicPrintConfig::diff` against `new_from_defaults_keys` (G6 — avoid `default_value->serialize()` which crashes on `coEnums`). |
+| `set --key K --value V [--object N] [--output O]` | Validate K against `print_config_def`. With `--object`: write to `ModelObject::config`. Without: write to `project_config`. Type-aware joiner on vector values (Bug A). |
+| `unset --key K [--object N] [--output O]` | Erase the option from the right target. |
+| `list [--object N] [--changed-only]` | Read-only; no save. Rejects `--output` (exit 1). `--changed-only` uses `DynamicPrintConfig::diff` against `new_from_defaults_keys` (G6 — avoid `default_value->serialize()` which crashes on `coEnums`). |
 
 ### 4.5 `inspect <file>`
 
@@ -193,7 +209,11 @@ JSON shape is stable across all commands: `status`, `code`, `message`, optional 
 
 ### 5.3 Atomicity
 
-Every mutating command writes to `<out>.tmp` and renames on success. If the invariant guard trips, the temp file is deleted and the original `<out>` (if any) is untouched. There is no half-written output on disk.
+The save target is the value resolved in § 3.3: `<file>` for in-place mutation, or `<out>` when `--output <out>` is supplied. In both cases the command writes to `<save_target>.tmp` and renames on success.
+
+- If the invariant guard trips, the temp file is deleted and the final `<save_target>` (if it already existed) is untouched.
+- When `--output <out>` is supplied, `<file>` is opened read-only and is never modified, regardless of success or failure.
+- There is no half-written output on disk in either mode.
 
 ### 5.4 No escape hatches
 
@@ -204,41 +224,90 @@ No `--force`. No `--allow-broken`. If an invariant fails, the user fixes the inp
 ### 6.1 Layers
 
 **Unit** (`tests/cli/unit/`) — pure functions, no disk, fast (<1 s total).
-- `project_ops`: add/remove plates and objects on hand-built `ProjectState`.
-- `placement`: deterministic grid math.
+- `project_ops`: add/remove/**rename** plates and add/remove objects on hand-built `ProjectState`.
+- `placement`: deterministic grid math (single-instance and `--count > 1` cases).
 - `invariants`: feed hand-crafted malformed `ProjectState` / synthetic zips, assert codes trip correctly.
 
 **Round-trip** (`tests/cli/roundtrip/`) — in-process, no subprocess.
 - Build `ProjectState`, `save_project` to `$TEMP`, `load_project` back, assert structural equality (plate count/names, object count per plate, filament-slot count, changed config keys).
-- Each composer operation has at least one round-trip test.
+- Each composer operation has at least one round-trip test. Specifically required:
+  - `plate add`, `plate remove`, **`plate rename`** (asserts name updated, PNG paths unchanged, indices unchanged).
+  - `object add` (single instance, default), `object add --count N` (N instances, all on plate's instance map), `object add` with transforms, `object add --filament N`, `object set-filament`, `object remove`.
+  - `config set --object`, `config set` (project-level), `config unset`.
+  - `--output <out>` variant for each: asserts the input `<file>` is byte-identical before/after and the `<out>` file has the mutation applied.
 - Catches G2 by construction.
 
 **E2E** (`tests/cli/e2e/`) — spawns `orca-cli.exe` via `boost::process`.
-- Asserts JSON output shape, exit codes for failure modes, invariant guard re-runs cleanly on the produced .3mf.
+- Asserts JSON output shape, exit codes for failure modes, runtime invariant guard re-runs cleanly on the produced .3mf.
 - One e2e per user-visible recipe.
 - ASCII `->` in test names (G8).
+- New e2e cases required:
+  - `plate rename` happy path + duplicate-name rejection (exit 5) + unknown-from rejection (exit 6).
+  - `object add --count 3` produces 3 instances on the target plate.
+  - `object add --output other.3mf` leaves the input `<file>` byte-identical and writes the mutation to `other.3mf`.
+  - `plate list --output anything.3mf` rejected with exit 1 (`usage_error`).
 
-### 6.2 Fixtures
+**E2E archive-level invariants** (new, complements the runtime invariant guard — does not replace it). For each e2e, after the CLI exits 0, the test harness unzips the produced 3mf to a temp dir and asserts:
+1. `Metadata/project_settings.config` parses as valid XML.
+2. If `printable_area` is present in `Metadata/project_settings.config`, it carries exactly 4 points (catches Bug A's class at the archive level).
+3. For every plate `N`, both `Metadata/plate_N.png` and `Metadata/plate_N_small.png` exist in the archive and decode to a 128×128 image.
+4. Every `<part>` block in `Metadata/model_settings.config` carries a `source_file` attribute (enforces the source-attribution requirement from § 4.3 and § 8).
+5. For every object added with `--filament N`, the corresponding object's `extruder` setting in `Metadata/model_settings.config` equals `N`.
 
-Canonical fixtures live in `C:\Users\ildarcheg\Documents\GitHub\slicer_tamplates\` (note the literal directory name; sic on spelling). This directory is shared with the sister `bambu-cli` workstream, which uses its own template alongside ours.
+These checks complement but do not replace the runtime invariant guard (§ 2). The runtime guard fails the CLI loudly; the archive-level e2e assertions catch any regression where the runtime guard itself is wrong or incomplete.
+
+### 6.2 Fixtures (authoritative)
+
+**The canonical fixture directory is:**
+
+```
+C:\Users\ildarcheg\Documents\GitHub\slicer_tamplates\
+```
+
+Note the literal spelling `slicer_tamplates` (sic). This directory is shared with the sister `bambu-cli` workstream; orca-cli touches only the orca-named files in it.
+
+**Canonical reference 3mf — must be used by every orca-cli test, debugging session, and manual GUI smoke recipe:**
+
+```
+C:\Users\ildarcheg\Documents\GitHub\slicer_tamplates\temp_project_for_orca_slicer.3mf
+```
+
+This file must **never** be modified in place. Every test that opens it for write copies it to `$env:TEMP\...` first and operates on the copy.
+
+**Canonical STL fixtures — must be used by every object-add test and manual smoke recipe:**
+
+```
+C:\Users\ildarcheg\Documents\GitHub\slicer_tamplates\000_01_test_cylinder.stl
+C:\Users\ildarcheg\Documents\GitHub\slicer_tamplates\000_01_test_cone.stl
+C:\Users\ildarcheg\Documents\GitHub\slicer_tamplates\000_01_test_bambu_cube.stl
+C:\Users\ildarcheg\Documents\GitHub\slicer_tamplates\000_01_test_cube.stl
+```
+
+**Off-limits:** the sister-project file
+
+```
+C:\Users\ildarcheg\Documents\GitHub\slicer_tamplates\temp_project_for_bambu_studio.3mf
+```
+
+must **not** be referenced by orca-cli. It is informational in the table below only so the path can be recognized and avoided.
 
 | Path | Role |
 |---|---|
-| `C:\Users\ildarcheg\Documents\GitHub\slicer_tamplates\temp_project_for_orca_slicer.3mf` | Reference 3mf for orca-cli. Authored in OrcaSlicer's GUI. **Never modify in place** — every test copies to `$TEMP` first. |
-| `C:\Users\ildarcheg\Documents\GitHub\slicer_tamplates\000_01_test_cylinder.stl` | Object-add fixture (cylinder). |
-| `C:\Users\ildarcheg\Documents\GitHub\slicer_tamplates\000_01_test_cone.stl` | Object-add fixture (cone). |
-| `C:\Users\ildarcheg\Documents\GitHub\slicer_tamplates\000_01_test_bambu_cube.stl` | Object-add fixture (cube, larger). |
-| `C:\Users\ildarcheg\Documents\GitHub\slicer_tamplates\000_01_test_cube.stl` | Object-add fixture (cube, minimal). |
-| `C:\Users\ildarcheg\Documents\GitHub\slicer_tamplates\temp_project_for_bambu_studio.3mf` | Sister-project template; **not used by orca-cli**, listed here so we don't accidentally point at it. |
+| `…\temp_project_for_orca_slicer.3mf` | **Canonical reference 3mf for orca-cli.** Authored in OrcaSlicer's GUI. **Never modify in place.** Every test copies to `$TEMP` first. |
+| `…\000_01_test_cylinder.stl` | Object-add fixture (cylinder). |
+| `…\000_01_test_cone.stl` | Object-add fixture (cone). |
+| `…\000_01_test_bambu_cube.stl` | Object-add fixture (cube, larger). |
+| `…\000_01_test_cube.stl` | Object-add fixture (cube, minimal). |
+| `…\temp_project_for_bambu_studio.3mf` | Sister-project template; **off-limits to orca-cli.** Informational only. |
 
-CMake cache vars expose these paths to the test build:
+**CMake cache variables (wired into the test build):**
 
-- `ORCA_CLI_REF_3MF` — defaults to `temp_project_for_orca_slicer.3mf` above.
-- `ORCA_CLI_STL_DIR` — defaults to the parent directory; individual STL filenames are resolved relative to it.
+- `ORCA_CLI_REF_3MF` — default: `C:\Users\ildarcheg\Documents\GitHub\slicer_tamplates\temp_project_for_orca_slicer.3mf`.
+- `ORCA_CLI_STL_DIR` — default: `C:\Users\ildarcheg\Documents\GitHub\slicer_tamplates`. Individual STL filenames are resolved relative to it.
 
-If any path is unset or missing on the host, the test that needs it `SUCCEED+skip`s so CI without local fixtures still passes. Committed in-tree minimal STLs (small, non-zero normals per G7) live under `tests/cli/fixtures/` for the CI path; the user-tree paths above are the local-development fixtures.
+If either path is missing on the host (e.g. headless CI without the user's local directory), tests that depend on it `SUCCEED+skip`s so CI passes anyway. The in-tree minimal STLs in `tests/cli/fixtures/` (small, non-zero normals per G7) cover the CI path.
 
-The reference 3mf is **never modified in place**. Every test copies it to `$TEMP` before opening for write. The current canonical fixture set is also pinned in the `[[reference-orca-cli-fixtures]]` memory.
+**Manual smoke recipe binding (§ 6.3):** `docs/cli/manual-test.md` must invoke `orca-cli` with these exact paths — not generic placeholders — so the user can copy-paste the commands and run them directly. Pinned also in the `[[reference-orca-cli-fixtures]]` memory.
 
 ### 6.3 Per-feature manual GUI smoke
 
@@ -307,9 +376,9 @@ After every subagent reports done:
 
 The smoke recipe is the only place the design's correctness is finally verified. Tests are necessary but not sufficient — Bug B in v1.2 proved that.
 
-## 8. Lessons baked in (G1–G9 + Bug A + Bug B)
+## 8. Lessons baked in (G1–G9 + Bug A + Bug B + Bug C)
 
-The retrospective enumerates 9 shared gotchas plus two latent save-path bugs. Every one is encoded in this design rather than carried as tribal knowledge:
+The retrospective enumerates 9 shared gotchas plus two latent save-path bugs. A third bug class (Bug C — missing source attribution on added objects) is added in v2 based on a known GUI failure mode where the renderer silently drops objects whose `<part>` blocks lack `source_file`. Every one is encoded in this design rather than carried as tribal knowledge:
 
 | # | Lesson | Where it lives in this design |
 |---|---|---|
@@ -324,6 +393,7 @@ The retrospective enumerates 9 shared gotchas plus two latent save-path bugs. Ev
 | G9 | `--file` collides with CLI11 + MSVC /GS | `--stl` everywhere |
 | Bug A | `apply_preset_kvs` separator mismatch | Not reachable — no preset overrides in v1 surface |
 | Bug B | Dangling small-thumbnail relationship | Invariant guard check #1 + placeholder PNG for new plates |
+| Bug C | Missing `source_file` on `<part>` → some GUIs silently drop the object (failure compounds with `extruder = N`) | `object add` stamps `vol->source.{input_file, object_idx, volume_idx}` on every added volume; e2e archive check #4 asserts `source_file` present on every `<part>` in `Metadata/model_settings.config` |
 
 ## 9. Open questions deferred to v2+
 
