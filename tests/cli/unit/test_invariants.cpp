@@ -41,3 +41,20 @@ TEST_CASE("orca-cli: verify_relationships throws on dangling Target",
     };
     REQUIRE_THROWS_AS(verify_relationships(entries), InvariantViolation);
 }
+
+TEST_CASE("orca-cli: verify_plate_thumbnails passes when every plate has png + small_png",
+          "[orca-cli][P1][unit]") {
+    std::vector<ZipEntry> entries{
+        { "Metadata/plate_1.png",       std::vector<char>(8, '\x89') },
+        { "Metadata/plate_1_small.png", std::vector<char>(8, '\x89') },
+    };
+    REQUIRE_NOTHROW(verify_plate_thumbnails(entries));
+}
+
+TEST_CASE("orca-cli: verify_plate_thumbnails throws when small_png is missing",
+          "[orca-cli][P1][unit]") {
+    std::vector<ZipEntry> entries{
+        { "Metadata/plate_1.png", std::vector<char>(8, '\x89') },
+    };
+    REQUIRE_THROWS_AS(verify_plate_thumbnails(entries), InvariantViolation);
+}

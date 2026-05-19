@@ -65,7 +65,31 @@ void verify_relationships(const std::vector<ZipEntry>& entries)
     }
 }
 
-// verify_plate_thumbnails and verify_vector_config_roundtrip land in
-// Tasks 1.6 / 1.7.
+void verify_plate_thumbnails(const std::vector<ZipEntry>& entries)
+{
+    std::unordered_set<std::string> names;
+    names.reserve(entries.size());
+    for (const auto& e : entries)
+        names.insert(e.name);
+
+    // Match "Metadata/plate_<N>.png" (the regular thumbnail) and require the
+    // small variant alongside. We deliberately skip "_small.png" and
+    // "_no_light.png" / "top_" / "pick_" siblings here -- the GUI's plate
+    // panel only needs the small thumbnail next to the regular one.
+    static const std::regex plate_re(R"(^Metadata/plate_(\d+)\.png$)");
+
+    std::smatch m;
+    for (const auto& e : entries) {
+        if (!std::regex_match(e.name, m, plate_re)) continue;
+        const std::string& n   = m[1].str();
+        const std::string small = "Metadata/plate_" + n + "_small.png";
+        if (names.find(small) == names.end()) {
+            throw InvariantViolation(
+                "plate " + n + " missing small thumbnail: " + small);
+        }
+    }
+}
+
+// verify_vector_config_roundtrip lands in Task 1.7.
 
 } // namespace orca_cli
