@@ -393,6 +393,153 @@ TEST_CASE("orca-cli: --scale '1' (uniform scalar) succeeds", "[orca-cli][P4][e2e
     REQUIRE(r.exit_code == 0);
 }
 
+// ---------------------------------------------------------------------------
+// P5 -- object filaments
+//
+// `--filament N` on `object add` stamps `extruder = N` on the new
+// ModelObject's per-object config. `object set-filament --name M
+// --filament N` retroactively assigns the slot. Slot validation:
+// N must be in [1, filament_settings_id.size()]. The reference 3mf
+// has 6 slots, so --filament 1..6 are valid; --filament 7+ are out
+// of range.
+//
+// Bug C regression lock-in: when --filament writes an extruder on
+// the new object, the source_file attribution on every <part> must
+// still be present. v1.2 historically lost source_file in this path
+// and the GUI silently dropped the resulting objects on open.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("orca-cli: object add --filament 2 stamps extruder=2 and preserves source_file",
+          "[orca-cli][P5][e2e]")
+{
+    if (ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+    auto cube = (stl_dir() / "000_01_test_cube.stl");
+    if (!fs::exists(cube)) { SUCCEED("Skipped"); return; }
+
+    auto tmp = make_temp_dir();
+    auto in  = copy_ref_to_temp(tmp, "obj-filament");
+    REQUIRE(run_cli({"plate", "add", in.string(), "--name", "F"}).exit_code == 0);
+    auto r = run_cli({"object", "add", in.string(),
+                      "--plate",    "F",
+                      "--stl",      cube.string(),
+                      "--filament", "2",
+                      "--name",     "cube_f2"});
+    INFO("stdout: " << r.stdout_ << "\nstderr: " << r.stderr_);
+    REQUIRE(r.exit_code == 0);
+
+    archive::assert_object_extruder(in, "cube_f2", 2);
+    // Bug C regression lock-in: source_file presence must hold even
+    // when --filament writes per-object extruder. v1.2 historically
+    // lost source_file on filament-assigned objects and the GUI
+    // silently dropped them on open.
+    archive::assert_parts_have_source_file(in);
+}
+
+TEST_CASE("orca-cli: object add --filament survives load/save roundtrip",
+          "[orca-cli][P5][e2e]")
+{
+    if (ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+    auto cube = (stl_dir() / "000_01_test_cube.stl");
+    if (!fs::exists(cube)) { SUCCEED("Skipped"); return; }
+
+    auto tmp = make_temp_dir();
+    auto in  = copy_ref_to_temp(tmp, "obj-filament-roundtrip");
+    REQUIRE(run_cli({"plate", "add", in.string(), "--name", "RT"}).exit_code == 0);
+    REQUIRE(run_cli({"object", "add", in.string(),
+                     "--plate",    "RT",
+                     "--stl",      cube.string(),
+                     "--filament", "4",
+                     "--name",     "rtcube"}).exit_code == 0);
+
+    // Re-load the saved archive and confirm the per-object extruder
+    // survived. Tests that ModelConfigObject's serialization path in
+    // bbs_3mf emits `<metadata key="extruder" value="N"/>` and the
+    // loader reads it back into obj->config.
+    auto s = orca_cli::load_project(in.string());
+    Slic3r::ModelObject* obj = nullptr;
+    for (auto* o : s.model->objects)
+        if (o->name == "rtcube") obj = o;
+    REQUIRE(obj != nullptr);
+    REQUIRE(obj->config.has("extruder"));
+    REQUIRE(obj->config.opt_int("extruder") == 4);
+}
+
+TEST_CASE("orca-cli: object add --filament 99 returns unknown_reference",
+          "[orca-cli][P5][e2e]")
+{
+    if (ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+    auto cube = (stl_dir() / "000_01_test_cube.stl");
+    if (!fs::exists(cube)) { SUCCEED("Skipped"); return; }
+
+    auto tmp = make_temp_dir();
+    auto in  = copy_ref_to_temp(tmp, "obj-filament-bad");
+    REQUIRE(run_cli({"plate", "add", in.string(), "--name", "F"}).exit_code == 0);
+    auto r = run_cli({"object", "add", in.string(),
+                      "--plate",    "F",
+                      "--stl",      cube.string(),
+                      "--filament", "99",
+                      "--name",     "cube"});
+    INFO("stdout: " << r.stdout_ << "\nstderr: " << r.stderr_);
+    REQUIRE(r.exit_code == 6); // unknown_reference
+}
+
+TEST_CASE("orca-cli: object set-filament updates extruder retroactively",
+          "[orca-cli][P5][e2e]")
+{
+    if (ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+    auto cube = (stl_dir() / "000_01_test_cube.stl");
+    if (!fs::exists(cube)) { SUCCEED("Skipped"); return; }
+
+    auto tmp = make_temp_dir();
+    auto in  = copy_ref_to_temp(tmp, "obj-set-filament");
+    REQUIRE(run_cli({"plate", "add", in.string(), "--name", "F"}).exit_code == 0);
+    REQUIRE(run_cli({"object", "add", in.string(),
+                     "--plate", "F",
+                     "--stl",   cube.string(),
+                     "--name",  "retro"}).exit_code == 0);
+
+    auto r = run_cli({"object", "set-filament", in.string(),
+                      "--name",     "retro",
+                      "--filament", "3"});
+    INFO("stdout: " << r.stdout_ << "\nstderr: " << r.stderr_);
+    REQUIRE(r.exit_code == 0);
+    archive::assert_object_extruder(in, "retro", 3);
+}
+
+TEST_CASE("orca-cli: object set-filament out-of-range returns unknown_reference",
+          "[orca-cli][P5][e2e]")
+{
+    if (ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+    auto cube = (stl_dir() / "000_01_test_cube.stl");
+    if (!fs::exists(cube)) { SUCCEED("Skipped"); return; }
+
+    auto tmp = make_temp_dir();
+    auto in  = copy_ref_to_temp(tmp, "obj-set-filament-bad");
+    REQUIRE(run_cli({"plate", "add", in.string(), "--name", "F"}).exit_code == 0);
+    REQUIRE(run_cli({"object", "add", in.string(),
+                     "--plate", "F",
+                     "--stl",   cube.string(),
+                     "--name",  "cube"}).exit_code == 0);
+    auto r = run_cli({"object", "set-filament", in.string(),
+                      "--name",     "cube",
+                      "--filament", "99"});
+    INFO("stdout: " << r.stdout_ << "\nstderr: " << r.stderr_);
+    REQUIRE(r.exit_code == 6); // unknown_reference
+}
+
+TEST_CASE("orca-cli: object set-filament unknown object returns unknown_reference",
+          "[orca-cli][P5][e2e]")
+{
+    if (ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+    auto tmp = make_temp_dir();
+    auto in  = copy_ref_to_temp(tmp, "obj-set-filament-ghost");
+    auto r = run_cli({"object", "set-filament", in.string(),
+                      "--name",     "ghost",
+                      "--filament", "1"});
+    INFO("stdout: " << r.stdout_ << "\nstderr: " << r.stderr_);
+    REQUIRE(r.exit_code == 6);
+}
+
 TEST_CASE("orca-cli: object list reports the plate name for objects on plates", "[orca-cli][P3][e2e]") {
     if (ref_3mf().empty()) { SUCCEED("Skipped"); return; }
     auto cube = (stl_dir() / "000_01_test_cube.stl");

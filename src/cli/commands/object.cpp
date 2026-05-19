@@ -94,7 +94,12 @@ int do_object_add(const GlobalOpts& g,
                   const std::string& name,
                   const std::string& translate_str,
                   const std::string& rotate_str,
-                  const std::string& scale_str)
+                  const std::string& scale_str,
+                  // P5: --filament. 0 is the unset sentinel (CLI11 leaves
+                  // the bound int at its default when the flag is absent).
+                  // Any negative or positive value is forwarded to
+                  // set_object_filament for validation.
+                  int                filament_slot)
 {
     if (int rc = check_input_exists(g, file); rc != int(ExitCode::ok))
         return rc;
@@ -168,6 +173,13 @@ int do_object_add(const GlobalOpts& g,
         p.translate   = translate;
         p.rotate      = rotate;
         p.scale       = scale;
+        // CLI11 stores filament_slot as a plain int with default 0; we
+        // treat 0 as "unset" because libslic3r's extruder index is 1-based
+        // (the GUI's filament panel labels start at 1, not 0). Anything
+        // else (negative or positive) is forwarded so the validation in
+        // set_object_filament reports the same error the user would see
+        // from `object set-filament`.
+        if (filament_slot != 0) p.filament_slot = filament_slot;
         add_object(state, p);
         save_project(state, out);
     } catch (const PlacementFailure& e) {
@@ -193,6 +205,37 @@ int do_object_add(const GlobalOpts& g,
     }
 
     print_ok(g, "added object from '" + stl + "' to plate '" + plate + "'");
+    return int(ExitCode::ok);
+}
+
+int do_object_set_filament(const GlobalOpts& g,
+                           const std::string& file,
+                           const std::string& name,
+                           int                slot)
+{
+    if (int rc = check_input_exists(g, file); rc != int(ExitCode::ok))
+        return rc;
+
+    const std::string out = resolve_save_target(g, file);
+    try {
+        auto state = load_project(file);
+        set_object_filament(state, name, slot);
+        save_project(state, out);
+    } catch (const InvariantViolation& e) {
+        print_err(g, ExitCode::invariant_violation, e.what());
+        return int(ExitCode::invariant_violation);
+    } catch (const std::out_of_range& e) {
+        // Both "object not found" and "slot out of range" surface as
+        // std::out_of_range from set_object_filament; both map to
+        // unknown_reference per the P5 plan.
+        print_err(g, ExitCode::unknown_reference, e.what());
+        return int(ExitCode::unknown_reference);
+    } catch (const std::exception& e) {
+        print_err(g, ExitCode::parse_failure, e.what());
+        return int(ExitCode::parse_failure);
+    }
+    print_ok(g, "set filament " + std::to_string(slot) +
+                " on object '" + name + "'");
     return int(ExitCode::ok);
 }
 
@@ -300,8 +343,14 @@ void register_object_subcmd(CLI::App& app, GlobalOpts& g)
     static std::string add_file, add_plate, add_stl, add_name;
     static std::string add_translate, add_rotate, add_scale;
     static int         add_count = 1;
+    // P5: --filament on `object add`. 0 means "unset"; the callback only
+    // forwards non-zero values to AddObjectParams::filament_slot.
+    static int         add_filament = 0;
     static std::string rm_file,  rm_name;
     static std::string ls_file;
+    // P5: state for `object set-filament`.
+    static std::string sf_file, sf_name;
+    static int         sf_slot = 0;
 
     // -- object add --------------------------------------------------------
     auto* add = obj->add_subcommand("add", "add an STL to a plate");
@@ -324,12 +373,18 @@ void register_object_subcmd(CLI::App& app, GlobalOpts& g)
                     "Euler XYZ rotation in radians: ax,ay,az");
     add->add_option("--scale", add_scale,
                     "scaling factor: uniform s, or sx,sy,sz");
+    // P5: filament slot (1-based) -- forwarded to set_object_filament after
+    // instance placement. Out-of-range / unknown-object both throw
+    // std::out_of_range and surface as exit 6 (unknown_reference).
+    add->add_option("--filament", add_filament,
+                    "filament slot to assign (1-based)");
     add->add_option("--output", g.output,
                     "write result to this path instead of overwriting input");
     add->callback([&g]() {
         std::exit(do_object_add(g, add_file, add_plate, add_stl,
                                 add_count, add_name,
-                                add_translate, add_rotate, add_scale));
+                                add_translate, add_rotate, add_scale,
+                                add_filament));
     });
 
     // -- object remove -----------------------------------------------------
@@ -340,6 +395,23 @@ void register_object_subcmd(CLI::App& app, GlobalOpts& g)
                    "write result to this path instead of overwriting input");
     rm->callback([&g]() {
         std::exit(do_object_remove(g, rm_file, rm_name));
+    });
+
+    // -- object set-filament (P5) -----------------------------------------
+    // Retroactively assign a filament slot to an existing object. Same
+    // validation rules as `object add --filament`: slot must be in
+    // [1, filament_settings_id.size()]; out-of-range OR unknown-object
+    // both exit 6 (unknown_reference).
+    auto* setf = obj->add_subcommand("set-filament",
+        "assign a filament slot to an existing object");
+    setf->add_option("file",     sf_file, "input .3mf path")->required();
+    setf->add_option("--name",   sf_name, "object name to update")->required();
+    setf->add_option("--filament", sf_slot,
+                     "filament slot (1-based)")->required();
+    setf->add_option("--output", g.output,
+                     "write result to this path instead of overwriting input");
+    setf->callback([&g]() {
+        std::exit(do_object_set_filament(g, sf_file, sf_name, sf_slot));
     });
 
     // -- object list -------------------------------------------------------

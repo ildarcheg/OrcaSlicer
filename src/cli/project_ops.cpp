@@ -264,6 +264,17 @@ void add_object(ProjectState& s, const AddObjectParams& p)
                 obj_idx, int(obj->instances.size() - 1));
         }
     }
+
+    // P5: stamp extruder if --filament was requested. Run after instance
+    // placement so a failing slot validation does not leave a partially
+    // placed half-object behind on the plate (set_object_filament throws
+    // std::out_of_range -> exit 6 in commands/object.cpp). Source
+    // attribution is already in place at this point, so a successful
+    // --filament path preserves the Bug C defense -- the e2e test
+    // assert_parts_have_source_file holds even when filament is set.
+    if (p.filament_slot.has_value()) {
+        set_object_filament(s, obj->name, *p.filament_slot);
+    }
 }
 
 void set_object_filament(ProjectState& s, const std::string& object_name, int filament_slot)

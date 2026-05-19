@@ -92,7 +92,7 @@ void rename_plate(ProjectState& s, const std::string& from, const std::string& t
 // Object mutations (P3).
 
 // Parameters for add_object. P4 adds optional translate / rotate / scale;
-// --filament is still reserved for P5.
+// P5 adds optional filament_slot (1-based extruder index).
 //
 // Transform semantics (spec § 4.3):
 //   translate: x,y[,z] in mm, plate-local (0,0 == plate's bed-min corner).
@@ -108,6 +108,11 @@ void rename_plate(ProjectState& s, const std::string& from, const std::string& t
 // the deterministic grid placement of P3 to "stacking": all `count`
 // instances share the same post-transform offset. has_explicit_transform()
 // captures that branch condition.
+//
+// filament_slot is independent of the transform branch -- when present,
+// add_object stamps `extruder = filament_slot` on the new ModelObject's
+// ModelConfigObject AFTER instance placement, by delegating to
+// set_object_filament(). Out-of-range slots throw std::out_of_range.
 struct AddObjectParams {
     std::string plate_name;     // target plate (must already exist)
     std::string stl_path;       // path to the STL on disk; also stamped as source
@@ -116,6 +121,7 @@ struct AddObjectParams {
     std::optional<Slic3r::Vec3d> translate;   // plate-local (mm)
     std::optional<Slic3r::Vec3d> rotate;      // Euler XYZ (radians)
     std::optional<Slic3r::Vec3d> scale;       // per-axis; uniform `s` -> {s,s,s}
+    std::optional<int>           filament_slot; // 1-based; validated against filament_settings_id
 };
 
 inline bool has_explicit_transform(const AddObjectParams& p) {

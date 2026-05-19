@@ -324,3 +324,46 @@ TEST_CASE("orca-cli: set_object_filament rejects unknown object",
     auto s = load_project(orca_cli_test::ref_3mf().string());
     REQUIRE_THROWS_AS(set_object_filament(s, "ghost", 1), std::out_of_range);
 }
+
+TEST_CASE("orca-cli: add_object with filament_slot stamps extruder",
+          "[orca-cli][P5][unit]")
+{
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+    auto stl = (orca_cli_test::stl_dir() / "000_01_test_cube.stl");
+    if (!boost::filesystem::exists(stl)) { SUCCEED("Skipped"); return; }
+
+    auto s = load_project(orca_cli_test::ref_3mf().string());
+    add_plate(s, "F5Add");
+
+    AddObjectParams p;
+    p.plate_name    = "F5Add";
+    p.stl_path      = stl.string();
+    p.object_name   = "fadd";
+    p.filament_slot = 3;
+    add_object(s, p);
+
+    Slic3r::ModelObject* obj = nullptr;
+    for (auto* o : s.model->objects)
+        if (o->name == "fadd") obj = o;
+    REQUIRE(obj != nullptr);
+    REQUIRE(obj->config.has("extruder"));
+    REQUIRE(obj->config.opt_int("extruder") == 3);
+}
+
+TEST_CASE("orca-cli: add_object with out-of-range filament_slot throws",
+          "[orca-cli][P5][unit]")
+{
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+    auto stl = (orca_cli_test::stl_dir() / "000_01_test_cube.stl");
+    if (!boost::filesystem::exists(stl)) { SUCCEED("Skipped"); return; }
+
+    auto s = load_project(orca_cli_test::ref_3mf().string());
+    add_plate(s, "F5AddBad");
+
+    AddObjectParams p;
+    p.plate_name    = "F5AddBad";
+    p.stl_path      = stl.string();
+    p.object_name   = "fbad";
+    p.filament_slot = 99;
+    REQUIRE_THROWS_AS(add_object(s, p), std::out_of_range);
+}
