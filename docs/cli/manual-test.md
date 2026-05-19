@@ -73,3 +73,45 @@ Anti-cases (each should exit non-zero with a clean message):
 & $CLI plate list   $OUT --output anywhere.3mf   # --output not allowed on list
 # expected: exit 1 (usage_error)
 ```
+
+## Phase 3 - object add (auto-place)
+
+```powershell
+$OUT = "$env:TEMP\orca-cli-p3.3mf"
+Copy-Item $REF $OUT -Force
+& $CLI plate  add $OUT --name Brackets
+& $CLI object add $OUT --plate Brackets --stl "$STLS\000_01_test_cylinder.stl" --name cyl
+& $CLI object add $OUT --plate Brackets --stl "$STLS\000_01_test_cone.stl" --count 3 --name cone
+& $CLI object list $OUT
+```
+
+Expected: four new ModelObjects (1 `cyl` + 3 instances of `cone`) are
+appended to the project, with the `Brackets` plate carrying their
+instance entries on save. When `$OUT` opens in OrcaSlicer all four
+objects render and slice (Bug C defended -- every ModelVolume has
+`source.input_file` stamped to the STL path so the GUI does not silently
+drop the part on load).
+
+Note: `orca-cli object list` and `orca-cli plate list` currently display
+0 objects per plate even on the unmodified reference 3mf. That is a
+pre-existing load_project / `loaded_id` rebuild gap (the saved
+`objects_and_instances` are correct -- the GUI loads them fine -- but
+the CLI's in-memory reconstruction misses them). Use OrcaSlicer's plate
+panel as the ground truth for plate membership until the rebuild is
+hardened in a later phase.
+
+Anti-cases (each should exit non-zero with a clean message):
+
+```powershell
+& $CLI object add $OUT --plate Nope --stl "$STLS\000_01_test_cube.stl"
+# expected: exit 6 (unknown_reference)
+
+& $CLI object add $OUT --plate Brackets --stl "C:\does\not\exist.stl"
+# expected: exit 2 (file_not_found)
+
+& $CLI object list $OUT --output anywhere.3mf
+# expected: exit 1 (usage_error)
+
+& $CLI object remove $OUT --name ghost-does-not-exist
+# expected: exit 6 (unknown_reference)
+```

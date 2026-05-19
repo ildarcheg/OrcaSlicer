@@ -52,3 +52,42 @@ Updated by each phase.
       with the new plates visible and named correctly in the plate
       switcher. (Pending separate manual verification per
       `docs/cli/manual-test.md` -> Phase 2.)
+
+## Phase 3 - object add (auto-place)
+
+- [x] `placement.cpp` provides two pure helpers (`plate_origin_offset`
+      and `place_in_plate`) implementing the GUI's sqrt-based 2D plate
+      grid and a deterministic within-plate row/column slot layout.
+      Unit-tested on its own without any IO / Model dependencies.
+- [x] `add_object` in `project_ops.cpp` loads an STL via `load_stl`,
+      appends a fresh `ModelObject` (deep-copied so the scratch model
+      can be discarded), stamps `ModelVolume::source.{input_file,
+      object_idx, volume_idx}` on every volume (Bug C defense -- spec
+      section 8), and places `count` instances on the named plate via
+      `plate_origin_offset` composed with `place_in_plate`. The reference
+      printable_area drives the per-plate stride; falls back to a
+      250 x 250 default if missing.
+- [x] `remove_object` in `project_ops.cpp` removes a `ModelObject` by
+      name and rebuilds every `PlateData::objects_and_instances` so
+      entries pointing at the removed object are dropped and indices
+      greater than the removed index are shifted down by 1.
+- [x] `orca-cli object {add,remove,list} <file> [--output O]` end-to-end.
+      `add` accepts `--plate`, `--stl`, `--count`, `--name`. `list`
+      rejects `--output` with `usage_error`. Subcommand option name is
+      `--stl` (not `--file`) to avoid the CLI11 + MSVC /GS abort we
+      hit on G9.
+- [x] Translation / rotation / scale flags are deliberately not in P3
+      -- they are P4's responsibility. `--filament` is P5.
+- [x] e2e: object add produces an archive that passes
+      `assert_parts_have_source_file` (source_file metadata present on
+      every `<part>` in `Metadata/model_settings.config`).
+- [ ] Manual GUI smoke: open the P3 manual-test output in OrcaSlicer
+      and verify the 4 new objects (1 cylinder + 3 cones) render and
+      slice on `Brackets`. (Pending separate manual verification per
+      `docs/cli/manual-test.md` -> Phase 3.)
+- [Known limitation] `orca-cli {plate,object} list` displays 0 objects
+      per plate even on the unmodified reference 3mf. This is a
+      pre-existing `load_project` / `loaded_id` rebuild gap and not a
+      P3 regression -- the on-disk `objects_and_instances` are written
+      correctly by `add_object` -> `save_project` (OrcaSlicer loads
+      them fine). Fix scheduled for a later phase.

@@ -3,6 +3,7 @@
 #include "output.hpp"
 #include "commands/project_init.hpp"
 #include "commands/plate.hpp"
+#include "commands/object.hpp"
 #include <cstdlib>
 #include <cstdio>
 
@@ -18,6 +19,7 @@ int main(int argc, char** argv)
     orca_cli::register_global_flags(app, opts);
     orca_cli::commands::register_project_subcmd(app, opts);
     orca_cli::commands::register_plate_subcmd  (app, opts);
+    orca_cli::commands::register_object_subcmd (app, opts);
 
     try {
         app.parse(argc, argv);
