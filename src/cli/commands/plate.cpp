@@ -108,6 +108,13 @@ int do_plate_remove(const GlobalOpts& g, const std::string& input, const std::st
     } catch (const std::out_of_range& e) {
         print_err(g, ExitCode::unknown_reference, e.what());
         return int(ExitCode::unknown_reference);
+    } catch (const std::invalid_argument& e) {
+        // remove_plate currently throws invalid_argument only on the
+        // "only plate" guard, which is pre-empted above. Map explicitly
+        // to invalid_state so a future helper throwing this type does
+        // not silently fall through to parse_failure.
+        print_err(g, ExitCode::invalid_state, e.what());
+        return int(ExitCode::invalid_state);
     } catch (const std::exception& e) {
         // Anything else (load/save failures) -> generic.
         print_err(g, ExitCode::parse_failure, e.what());
