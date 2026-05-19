@@ -24,4 +24,45 @@ void add_plate(ProjectState& s, const std::string& name)
     s.plates.emplace_back(std::move(pd));
 }
 
+void remove_plate(ProjectState& s, const std::string& name)
+{
+    if (s.plates.size() <= 1)
+        throw std::invalid_argument("cannot remove the only plate");
+
+    auto it = std::find_if(
+        s.plates.begin(), s.plates.end(),
+        [&](const std::unique_ptr<Slic3r::PlateData>& p) {
+            return p->plate_name == name;
+        });
+    if (it == s.plates.end())
+        throw std::out_of_range("plate not found: " + name);
+
+    s.plates.erase(it);
+    // Re-index the remaining plates so plate_index stays contiguous from 0;
+    // store_bbs_3mf and the GUI both treat plate_index as the canonical
+    // 1-based position on disk (plate_N.png follows from plate_index + 1).
+    for (size_t i = 0; i < s.plates.size(); ++i)
+        s.plates[i]->plate_index = static_cast<int>(i);
+}
+
+void rename_plate(ProjectState& s, const std::string& from, const std::string& to)
+{
+    if (from == to) return;
+
+    // Single pass: detect both `to`-collision and find the `from`-plate. We
+    // check duplicates eagerly (before mutating) so we never leave the state
+    // half-renamed on a collision.
+    Slic3r::PlateData* found = nullptr;
+    for (auto& p : s.plates) {
+        if (p->plate_name == to)
+            throw std::invalid_argument("duplicate plate name: " + to);
+        if (p->plate_name == from)
+            found = p.get();
+    }
+    if (!found)
+        throw std::out_of_range("plate not found: " + from);
+
+    found->plate_name = to;
+}
+
 } // namespace orca_cli

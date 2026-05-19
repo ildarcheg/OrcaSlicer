@@ -57,4 +57,20 @@ struct ProjectState {
 //   throws std::invalid_argument if `name` matches an existing plate.
 void add_plate(ProjectState& s, const std::string& name);
 
+// remove_plate: remove the first plate whose plate_name == `name`. After
+// removal, plate_index of the remaining plates is re-numbered contiguously
+// from 0 so the on-disk plate_N.png naming stays consistent.
+//
+//   throws std::invalid_argument if this would leave zero plates.
+//   throws std::out_of_range     if no plate with that name exists.
+void remove_plate(ProjectState& s, const std::string& name);
+
+// rename_plate: update the plate_name of the plate with name == `from` to
+// `to`. plate_index is preserved. PNG thumbnail entries are NOT renamed;
+// they are keyed by plate_index, not plate_name.
+//
+//   throws std::invalid_argument if a plate with name == `to` already exists.
+//   throws std::out_of_range     if no plate with name == `from` exists.
+void rename_plate(ProjectState& s, const std::string& from, const std::string& to);
+
 } // namespace orca_cli
