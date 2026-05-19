@@ -367,3 +367,136 @@ TEST_CASE("orca-cli: add_object with out-of-range filament_slot throws",
     p.filament_slot = 99;
     REQUIRE_THROWS_AS(add_object(s, p), std::out_of_range);
 }
+
+// -- P6: config set / unset / list -----------------------------------------
+
+TEST_CASE("orca-cli: set_project_config writes key with value validation",
+          "[orca-cli][P6][unit]")
+{
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+    auto s = load_project(orca_cli_test::ref_3mf().string());
+    set_project_config(s, "sparse_infill_density", "30%");
+    const auto* opt = s.project_config->option("sparse_infill_density");
+    REQUIRE(opt != nullptr);
+    REQUIRE(opt->serialize() == "30%");
+}
+
+TEST_CASE("orca-cli: set_project_config rejects unknown key",
+          "[orca-cli][P6][unit]")
+{
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+    auto s = load_project(orca_cli_test::ref_3mf().string());
+    REQUIRE_THROWS_AS(set_project_config(s, "no_such_key", "42"), BadConfigError);
+}
+
+TEST_CASE("orca-cli: set_project_config rejects bad value",
+          "[orca-cli][P6][unit]")
+{
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+    auto s = load_project(orca_cli_test::ref_3mf().string());
+    REQUIRE_THROWS_AS(set_project_config(s, "layer_height", "not-a-number"),
+                      BadConfigError);
+}
+
+TEST_CASE("orca-cli: set_object_config writes per-object key",
+          "[orca-cli][P6][unit]")
+{
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+    auto stl = (orca_cli_test::stl_dir() / "000_01_test_cube.stl");
+    if (!boost::filesystem::exists(stl)) { SUCCEED("Skipped"); return; }
+
+    auto s = load_project(orca_cli_test::ref_3mf().string());
+    add_plate(s, "P6T");
+
+    AddObjectParams p;
+    p.plate_name  = "P6T";
+    p.stl_path    = stl.string();
+    p.object_name = "objc";
+    add_object(s, p);
+
+    set_object_config(s, "objc", "wall_loops", "4");
+
+    Slic3r::ModelObject* obj = nullptr;
+    for (auto* o : s.model->objects)
+        if (o->name == "objc") obj = o;
+    REQUIRE(obj != nullptr);
+    REQUIRE(obj->config.has("wall_loops"));
+    // ModelConfig::option is non-template (returns const ConfigOption*),
+    // so we read the value via opt_int rather than a typed option<T>.
+    REQUIRE(obj->config.opt_int("wall_loops") == 4);
+}
+
+TEST_CASE("orca-cli: set_object_config rejects unknown object",
+          "[orca-cli][P6][unit]")
+{
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+    auto s = load_project(orca_cli_test::ref_3mf().string());
+    REQUIRE_THROWS_AS(set_object_config(s, "ghost", "wall_loops", "4"),
+                      std::out_of_range);
+}
+
+TEST_CASE("orca-cli: set_object_config rejects unknown key",
+          "[orca-cli][P6][unit]")
+{
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+    auto stl = (orca_cli_test::stl_dir() / "000_01_test_cube.stl");
+    if (!boost::filesystem::exists(stl)) { SUCCEED("Skipped"); return; }
+
+    auto s = load_project(orca_cli_test::ref_3mf().string());
+    add_plate(s, "P6TBadKey");
+
+    AddObjectParams p;
+    p.plate_name  = "P6TBadKey";
+    p.stl_path    = stl.string();
+    p.object_name = "obk";
+    add_object(s, p);
+
+    // Unknown key must surface as BadConfigError BEFORE the object-not-found
+    // check (validate_key_exists runs first in set_object_config).
+    REQUIRE_THROWS_AS(set_object_config(s, "obk", "no_such_key", "1"),
+                      BadConfigError);
+}
+
+TEST_CASE("orca-cli: unset_project_config removes the key",
+          "[orca-cli][P6][unit]")
+{
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+    auto s = load_project(orca_cli_test::ref_3mf().string());
+    set_project_config(s, "sparse_infill_density", "30%");
+    REQUIRE(s.project_config->has("sparse_infill_density"));
+    unset_project_config(s, "sparse_infill_density");
+    REQUIRE_FALSE(s.project_config->has("sparse_infill_density"));
+}
+
+TEST_CASE("orca-cli: unset_project_config rejects unknown key",
+          "[orca-cli][P6][unit]")
+{
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+    auto s = load_project(orca_cli_test::ref_3mf().string());
+    REQUIRE_THROWS_AS(unset_project_config(s, "no_such_key"), BadConfigError);
+}
+
+TEST_CASE("orca-cli: unset_object_config rejects unknown object",
+          "[orca-cli][P6][unit]")
+{
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+    auto s = load_project(orca_cli_test::ref_3mf().string());
+    // Key must validate first; pick a known-good key so we land on the
+    // object-lookup branch.
+    REQUIRE_THROWS_AS(unset_object_config(s, "ghost", "wall_loops"),
+                      std::out_of_range);
+}
+
+TEST_CASE("orca-cli: changed_project_keys returns at least one key for the reference 3mf",
+          "[orca-cli][P6][unit]")
+{
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+    auto s = load_project(orca_cli_test::ref_3mf().string());
+    auto changed = changed_project_keys(s);
+    // The reference 3mf has many non-default keys (printer profile,
+    // filament settings, custom gcode, ...); the diff must surface at
+    // least one of them. This is the G6 smoke check -- if the diff path
+    // were going through default_value->serialize() we'd crash on a
+    // coEnum here instead of returning a vector.
+    REQUIRE_FALSE(changed.empty());
+}

@@ -1,10 +1,11 @@
 // project_ops.cpp -- mutations on a loaded ProjectState. Phase 2 introduces
-// the plate ops; Phase 3 adds object add / remove. Later phases will add
-// transform / filament / config.
+// the plate ops; Phase 3 adds object add / remove. Phase 6 adds the
+// project / per-object config set/unset/list helpers.
 #include "project_ops.hpp"
 #include "placement.hpp"
 
 #include <libslic3r/Format/STL.hpp>
+#include <libslic3r/PrintConfig.hpp>
 
 #include <boost/filesystem.hpp>
 
@@ -313,6 +314,119 @@ void set_object_filament(ProjectState& s, const std::string& object_name, int fi
     // GUI's MMU and "set extruder" paths (see GUI_ObjectList.cpp:2819,
     // ObjColorDialog.cpp:441) and by libslic3r itself in Model.cpp:3066.
     obj->config.set("extruder", filament_slot);
+}
+
+// --------------------------------------------------------------------------
+// Config mutations (P6).
+//
+// Shared helpers:
+//   * validate_key_exists: throws BadConfigError if a key is not in
+//     print_config_def. Used by all four set/unset helpers so a typo
+//     surfaces consistently as exit 4 rather than landing in
+//     ModelConfig::set_deserialize's "create a junk entry" path.
+//   * find_object: linear lookup by name; throws std::out_of_range with
+//     the same wording other commands use ("object not found: <name>").
+//
+// set_*: delegate the value parse to libslic3r's set_deserialize via a
+// ConfigSubstitutionContext built with Disable (we want strict parsing
+// for user-supplied values -- accepting silently-substituted enums on
+// the CLI would defeat the bad_config exit code).
+
+namespace {
+
+void validate_key_exists(const std::string& key)
+{
+    if (!Slic3r::print_config_def.has(key))
+        throw BadConfigError("unknown config key: " + key);
+}
+
+Slic3r::ModelObject* find_object_or_throw(ProjectState&      s,
+                                          const std::string& object_name)
+{
+    for (auto* o : s.model->objects) {
+        if (o->name == object_name) return o;
+    }
+    throw std::out_of_range("object not found: " + object_name);
+}
+
+} // namespace
+
+void set_project_config(ProjectState& s, const std::string& key, const std::string& value)
+{
+    using namespace Slic3r;
+    validate_key_exists(key);
+    // Disable: a value the user typed must parse strictly. We don't want
+    // a typo'd enum to silently land as the option's first valid value.
+    ConfigSubstitutionContext ctx(ForwardCompatibilitySubstitutionRule::Disable);
+    try {
+        s.project_config->set_deserialize(key, value, ctx);
+    } catch (const std::exception& e) {
+        throw BadConfigError("invalid value for '" + key + "': " + e.what());
+    }
+}
+
+void set_object_config(ProjectState& s, const std::string& object_name,
+                       const std::string& key, const std::string& value)
+{
+    using namespace Slic3r;
+    validate_key_exists(key);
+    ModelObject* obj = find_object_or_throw(s, object_name);
+
+    ConfigSubstitutionContext ctx(ForwardCompatibilitySubstitutionRule::Disable);
+    try {
+        // ModelConfigObject::set_deserialize bumps the model-config
+        // timestamp on write -- same path the GUI uses when a per-object
+        // setting changes through the settings panel.
+        obj->config.set_deserialize(key, value, ctx);
+    } catch (const std::exception& e) {
+        throw BadConfigError("invalid value for '" + key + "': " + e.what());
+    }
+}
+
+void unset_project_config(ProjectState& s, const std::string& key)
+{
+    validate_key_exists(key);
+    // erase returns false if the key wasn't set; that's fine -- the
+    // semantic is "key is not set after this call" rather than "removed
+    // an existing key". A typo on the key name was already rejected
+    // above by validate_key_exists.
+    s.project_config->erase(key);
+}
+
+void unset_object_config(ProjectState& s, const std::string& object_name,
+                         const std::string& key)
+{
+    validate_key_exists(key);
+    Slic3r::ModelObject* obj = find_object_or_throw(s, object_name);
+    obj->config.erase(key);
+}
+
+std::vector<std::string> changed_project_keys(const ProjectState& s)
+{
+    using namespace Slic3r;
+    // G6 (spec § 8): avoid `default_value->serialize()` here -- it crashes
+    // on coEnums whose default holds an enum value. Instead, build a
+    // defaults DynamicPrintConfig restricted to the same key set and let
+    // DynamicConfig::diff do the comparison.
+    auto keys = s.project_config->keys();
+    // new_from_defaults_keys returns a new'd raw pointer; wrap to release.
+    std::unique_ptr<DynamicPrintConfig> defaults(
+        DynamicPrintConfig::new_from_defaults_keys(keys));
+    return s.project_config->diff(*defaults);
+}
+
+std::vector<std::string> object_config_keys(const ProjectState& s,
+                                            const std::string& object_name)
+{
+    Slic3r::ModelObject* obj = nullptr;
+    for (auto* o : s.model->objects) {
+        if (o->name == object_name) { obj = o; break; }
+    }
+    if (!obj) throw std::out_of_range("object not found: " + object_name);
+    // ModelConfig only ever holds the explicitly-set keys (the GUI
+    // populates it lazily as the user touches settings), so this list IS
+    // the change set -- no diff needed.
+    return obj->config.keys();
 }
 
 void remove_object(ProjectState& s, const std::string& object_name)

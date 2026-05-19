@@ -21,6 +21,19 @@ public:
     using std::runtime_error::runtime_error;
 };
 
+// Thrown by the P6 config mutations when the user passes an unknown key
+// (not present in print_config_def) or a value rejected by libslic3r's
+// set_deserialize (parse / range failure). The CLI maps this to
+// ExitCode::bad_config (exit 4).
+//
+// Distinct from std::invalid_argument (which the plate command catch-chain
+// maps to ExitCode::duplicate_name, exit 5) so a typo on a config key
+// surfaces as "bad config" rather than the misleading "duplicate name".
+class BadConfigError : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
+
 
 // In-memory representation of a loaded 3mf project.
 // Owns the Model, the project DynamicPrintConfig, and the PlateData vector
@@ -167,5 +180,63 @@ void remove_object(ProjectState& s, const std::string& object_name);
 // failures (unknown plate, unknown object, out-of-range slot) to
 // ExitCode::unknown_reference (exit 6) -- no new exit code required.
 void set_object_filament(ProjectState& s, const std::string& object_name, int filament_slot);
+
+// --------------------------------------------------------------------------
+// Config mutations (P6).
+//
+// All four set/unset helpers validate that `key` exists in
+// print_config_def. Set helpers additionally delegate the value parse to
+// libslic3r's set_deserialize, which is the same code path the GUI and
+// .3mf loader use -- so a value accepted by the GUI's settings panel is
+// also accepted here, and a malformed value gets rejected with the same
+// error libslic3r would produce.
+//
+// Exception contract (mapped by commands/config.cpp):
+//   * unknown key            -> BadConfigError (-> exit 4 bad_config)
+//   * bad value              -> BadConfigError (-> exit 4 bad_config)
+//   * unknown object name    -> std::out_of_range (-> exit 6 unknown_reference)
+//
+// Vector-typed keys (coPoint*, coStrings, coPoints, ...) are written by
+// passing the user's --value string straight through to set_deserialize;
+// libslic3r's per-option deserializer already knows the right separator
+// (','/';'/'#'). The vector-config roundtrip invariant guard from P1
+// catches any case where the deserialized form doesn't round-trip back
+// to a byte-identical serialization.
+
+// Validates key via print_config_def; writes the value via set_deserialize.
+//   throws BadConfigError if `key` is unknown or `value` is rejected.
+void set_project_config(ProjectState& s, const std::string& key, const std::string& value);
+
+// Per-object scope. Writes to the named ModelObject's ModelConfigObject
+// rather than the project-wide DynamicPrintConfig.
+//   throws BadConfigError    if `key` is unknown or `value` is rejected.
+//   throws std::out_of_range if no object named `object_name` exists.
+void set_object_config(ProjectState& s, const std::string& object_name,
+                       const std::string& key, const std::string& value);
+
+// Removes `key` from the project_config (no-op if it wasn't set, but the
+// key must still exist in print_config_def so typos surface as bad_config
+// rather than silently succeeding).
+//   throws BadConfigError if `key` is not in print_config_def.
+void unset_project_config(ProjectState& s, const std::string& key);
+
+// Per-object unset. Same contract as unset_project_config.
+//   throws BadConfigError    if `key` is not in print_config_def.
+//   throws std::out_of_range if no object named `object_name` exists.
+void unset_object_config(ProjectState& s, const std::string& object_name,
+                         const std::string& key);
+
+// Returns the project-level keys whose values differ from the libslic3r
+// defaults for those keys. Implemented via DynamicPrintConfig::diff against
+// new_from_defaults_keys (spec G6: avoid default_value->serialize() which
+// crashes on coEnums).
+std::vector<std::string> changed_project_keys(const ProjectState& s);
+
+// Returns the keys explicitly set on a ModelObject's per-object config.
+// (ModelConfig only stores explicitly-set keys, so there's nothing to
+// diff against -- the listing is the change set.)
+//   throws std::out_of_range if no object named `object_name` exists.
+std::vector<std::string> object_config_keys(const ProjectState& s,
+                                            const std::string& object_name);
 
 } // namespace orca_cli
