@@ -74,9 +74,42 @@ ProjectState load_project(const std::string& path)
     return s;
 }
 
-void save_project(const ProjectState& /*s*/, const std::string& /*target_path*/)
+void save_project(const ProjectState& s, const std::string& target_path)
 {
-    throw std::runtime_error("save_project not implemented yet");
+    using namespace Slic3r;
+
+    // Write to "<target>.tmp" then atomic-rename, so a crash mid-write does
+    // not leave a half-written .3mf at the destination path.
+    fs::path tmp = fs::path(target_path).string() + ".tmp";
+    // store_bbs_3mf takes a `const char*` for the path. Bind the string to a
+    // local so it outlives the StoreParams.
+    std::string tmp_path = tmp.string();
+
+    PlateDataPtrs plate_data = s.plate_data_ptrs();
+
+    StoreParams sp;
+    sp.path             = tmp_path.c_str();
+    sp.model            = s.model.get();
+    sp.plate_data_list  = plate_data;
+    sp.config           = s.project_config.get();
+    // Default in the struct already includes Zip64, which is what the GUI uses
+    // when saving a regular project; do not change it without strong reason.
+    sp.strategy         = SaveStrategy::Zip64;
+
+    const bool ok = store_bbs_3mf(sp);
+    if (!ok) {
+        boost::system::error_code ec;
+        fs::remove(tmp, ec);
+        throw std::runtime_error("store_bbs_3mf failed: " + target_path);
+    }
+
+    // Atomic-ish rename. boost::filesystem::rename on Windows overwrites the
+    // destination if it exists (MoveFileEx with MOVEFILE_REPLACE_EXISTING via
+    // boost), so remove any pre-existing file first to keep behaviour
+    // predictable across platforms.
+    boost::system::error_code ec;
+    fs::remove(target_path, ec);
+    fs::rename(tmp, target_path);
 }
 
 } // namespace orca_cli
