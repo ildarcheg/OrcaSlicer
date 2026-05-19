@@ -159,6 +159,207 @@ TEST_CASE("orca-cli: object list lists objects",
     REQUIRE(r.stdout_.find("listed") != std::string::npos);
 }
 
+// ---------------------------------------------------------------------------
+// P4 -- object transforms
+//
+// The transform flags switch add_object from the deterministic grid
+// placement of P3 to "stacking" -- all --count N instances share the same
+// post-transform offset. Per-plate origin is folded into the world offset
+// so --translate is plate-local: (0,0) is the bed-min corner of the named
+// plate. These tests pin to plate 0 ("Plate 01 test") in the reference
+// 3mf where plate_origin_offset is (0,0), making the world-space assertion
+// trivially equal the requested local offset.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("orca-cli: object add --translate 60,60 places one instance at (60,60,0)",
+          "[orca-cli][P4][e2e]")
+{
+    if (ref_3mf().empty()) { SUCCEED("Skipped: reference 3mf not available"); return; }
+    auto cube = (stl_dir() / "000_01_test_cube.stl");
+    if (!fs::exists(cube)) { SUCCEED("Skipped: no cube fixture"); return; }
+
+    auto tmp = make_temp_dir();
+    auto in  = copy_ref_to_temp(tmp, "obj-translate-single");
+    // Target plate 0 (origin offset (0,0)) so world == local offset.
+    auto r = run_cli({"object", "add", in.string(),
+                      "--plate", "Plate 01 test",
+                      "--stl",   cube.string(),
+                      "--translate", "60,60",
+                      "--name", "cubeT"});
+    INFO("stdout: " << r.stdout_ << "\nstderr: " << r.stderr_);
+    REQUIRE(r.exit_code == 0);
+
+    auto s = orca_cli::load_project(in.string());
+    Slic3r::ModelObject* obj = nullptr;
+    for (auto* o : s.model->objects)
+        if (o->name == "cubeT") obj = o;
+    REQUIRE(obj != nullptr);
+    REQUIRE(obj->instances.size() == 1u);
+    REQUIRE_THAT(obj->instances.front()->get_offset().x(),
+                 Catch::Matchers::WithinAbs(60.0, 0.001));
+    REQUIRE_THAT(obj->instances.front()->get_offset().y(),
+                 Catch::Matchers::WithinAbs(60.0, 0.001));
+}
+
+TEST_CASE("orca-cli: --count 3 with --translate stacks 3 instances at the same offset",
+          "[orca-cli][P4][e2e]")
+{
+    if (ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+    auto cube = (stl_dir() / "000_01_test_cube.stl");
+    if (!fs::exists(cube)) { SUCCEED("Skipped: no cube fixture"); return; }
+
+    auto tmp = make_temp_dir();
+    auto in  = copy_ref_to_temp(tmp, "obj-translate-stack");
+    auto r = run_cli({"object", "add", in.string(),
+                      "--plate", "Plate 01 test",
+                      "--stl",   cube.string(),
+                      "--translate", "60,60",
+                      "--count", "3",
+                      "--name", "stack"});
+    INFO("stdout: " << r.stdout_ << "\nstderr: " << r.stderr_);
+    REQUIRE(r.exit_code == 0);
+
+    auto s = orca_cli::load_project(in.string());
+    Slic3r::ModelObject* obj = nullptr;
+    for (auto* o : s.model->objects)
+        if (o->name == "stack") obj = o;
+    REQUIRE(obj != nullptr);
+    REQUIRE(obj->instances.size() == 3u);
+    for (auto* inst : obj->instances) {
+        REQUIRE_THAT(inst->get_offset().x(),
+                     Catch::Matchers::WithinAbs(60.0, 0.001));
+        REQUIRE_THAT(inst->get_offset().y(),
+                     Catch::Matchers::WithinAbs(60.0, 0.001));
+    }
+}
+
+TEST_CASE("orca-cli: --count 3 without transforms keeps grid placement",
+          "[orca-cli][P4][e2e]")
+{
+    if (ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+    auto cube = (stl_dir() / "000_01_test_cube.stl");
+    if (!fs::exists(cube)) { SUCCEED("Skipped: no cube fixture"); return; }
+
+    auto tmp = make_temp_dir();
+    auto in  = copy_ref_to_temp(tmp, "obj-count-grid");
+    REQUIRE(run_cli({"plate", "add", in.string(), "--name", "G"}).exit_code == 0);
+    auto r = run_cli({"object", "add", in.string(),
+                      "--plate", "G",
+                      "--stl",   cube.string(),
+                      "--count", "3",
+                      "--name", "grid"});
+    INFO("stdout: " << r.stdout_ << "\nstderr: " << r.stderr_);
+    REQUIRE(r.exit_code == 0);
+
+    auto s = orca_cli::load_project(in.string());
+    Slic3r::ModelObject* obj = nullptr;
+    for (auto* o : s.model->objects)
+        if (o->name == "grid") obj = o;
+    REQUIRE(obj != nullptr);
+    REQUIRE(obj->instances.size() == 3u);
+    // No two instances share the same offset (grid placement is distinct
+    // per slot). Pairwise norm check defends against the placement.cpp
+    // collision bug captured in tests/cli/unit/test_placement.cpp.
+    auto p0 = obj->instances[0]->get_offset();
+    auto p1 = obj->instances[1]->get_offset();
+    auto p2 = obj->instances[2]->get_offset();
+    REQUIRE_FALSE((p0 - p1).norm() < 1.0);
+    REQUIRE_FALSE((p0 - p2).norm() < 1.0);
+    REQUIRE_FALSE((p1 - p2).norm() < 1.0);
+}
+
+TEST_CASE("orca-cli: --translate off-bed returns exit 9 placement_failure",
+          "[orca-cli][P4][e2e]")
+{
+    if (ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+    auto cube = (stl_dir() / "000_01_test_cube.stl");
+    if (!fs::exists(cube)) { SUCCEED("Skipped: no cube fixture"); return; }
+
+    auto tmp = make_temp_dir();
+    auto in  = copy_ref_to_temp(tmp, "obj-offbed");
+    REQUIRE(run_cli({"plate", "add", in.string(), "--name", "OB"}).exit_code == 0);
+    auto r = run_cli({"object", "add", in.string(),
+                      "--plate", "OB",
+                      "--stl",   cube.string(),
+                      "--translate", "99999,99999"});
+    INFO("stdout: " << r.stdout_ << "\nstderr: " << r.stderr_);
+    REQUIRE(r.exit_code == 9); // placement_failure
+}
+
+TEST_CASE("orca-cli: --scale 2 doubles instance scaling_factor",
+          "[orca-cli][P4][e2e]")
+{
+    if (ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+    auto cube = (stl_dir() / "000_01_test_cube.stl");
+    if (!fs::exists(cube)) { SUCCEED("Skipped: no cube fixture"); return; }
+
+    auto tmp = make_temp_dir();
+    auto in  = copy_ref_to_temp(tmp, "obj-scale");
+    auto r = run_cli({"object", "add", in.string(),
+                      "--plate", "Plate 01 test",
+                      "--stl",   cube.string(),
+                      "--translate", "60,60",
+                      "--scale", "2",
+                      "--name",  "big"});
+    INFO("stdout: " << r.stdout_ << "\nstderr: " << r.stderr_);
+    REQUIRE(r.exit_code == 0);
+
+    auto s = orca_cli::load_project(in.string());
+    Slic3r::ModelObject* obj = nullptr;
+    for (auto* o : s.model->objects)
+        if (o->name == "big") obj = o;
+    REQUIRE(obj != nullptr);
+    REQUIRE(obj->instances.size() == 1u);
+    auto sf = obj->instances.front()->get_scaling_factor();
+    REQUIRE_THAT(sf.x(), Catch::Matchers::WithinAbs(2.0, 1e-9));
+    REQUIRE_THAT(sf.y(), Catch::Matchers::WithinAbs(2.0, 1e-9));
+    REQUIRE_THAT(sf.z(), Catch::Matchers::WithinAbs(2.0, 1e-9));
+}
+
+TEST_CASE("orca-cli: --rotate 0,0,pi/4 sets instance rotation about Z",
+          "[orca-cli][P4][e2e]")
+{
+    if (ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+    auto cube = (stl_dir() / "000_01_test_cube.stl");
+    if (!fs::exists(cube)) { SUCCEED("Skipped: no cube fixture"); return; }
+
+    auto tmp = make_temp_dir();
+    auto in  = copy_ref_to_temp(tmp, "obj-rotate");
+    auto r = run_cli({"object", "add", in.string(),
+                      "--plate", "Plate 01 test",
+                      "--stl",   cube.string(),
+                      "--translate", "60,60",
+                      "--rotate", "0,0,0.7853981633974483",  // pi/4
+                      "--name",   "spun"});
+    INFO("stdout: " << r.stdout_ << "\nstderr: " << r.stderr_);
+    REQUIRE(r.exit_code == 0);
+
+    auto s = orca_cli::load_project(in.string());
+    Slic3r::ModelObject* obj = nullptr;
+    for (auto* o : s.model->objects)
+        if (o->name == "spun") obj = o;
+    REQUIRE(obj != nullptr);
+    auto rot = obj->instances.front()->get_rotation();
+    REQUIRE_THAT(rot.z(),
+                 Catch::Matchers::WithinAbs(0.7853981633974483, 1e-6));
+}
+
+TEST_CASE("orca-cli: --translate with bad value returns usage_error",
+          "[orca-cli][P4][e2e]")
+{
+    if (ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+    auto cube = (stl_dir() / "000_01_test_cube.stl");
+    if (!fs::exists(cube)) { SUCCEED("Skipped: no cube fixture"); return; }
+
+    auto tmp = make_temp_dir();
+    auto in  = copy_ref_to_temp(tmp, "obj-translate-bad");
+    auto r = run_cli({"object", "add", in.string(),
+                      "--plate", "Plate 01 test",
+                      "--stl",   cube.string(),
+                      "--translate", "not,a,number"});
+    REQUIRE(r.exit_code == 1); // usage_error
+}
+
 TEST_CASE("orca-cli: object list reports the plate name for objects on plates", "[orca-cli][P3][e2e]") {
     if (ref_3mf().empty()) { SUCCEED("Skipped"); return; }
     auto cube = (stl_dir() / "000_01_test_cube.stl");

@@ -3,9 +3,24 @@
 #include <libslic3r/PrintConfig.hpp>
 #include <libslic3r/Format/bbs_3mf.hpp>
 #include <memory>
+#include <optional>
+#include <stdexcept>
 #include <vector>
 
 namespace orca_cli {
+
+// Thrown by add_object when an explicit transform places the object's
+// world-space AABB outside the target plate's bed (X or Y). The CLI maps
+// this to ExitCode::placement_failure (exit 9). Distinct from
+// std::out_of_range (which maps to ExitCode::unknown_reference, exit 6)
+// so off-bed errors don't get reported as "plate not found".
+//
+// Mirrors the InvariantViolation pattern from invariants.hpp.
+class PlacementFailure : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
+
 
 // In-memory representation of a loaded 3mf project.
 // Owns the Model, the project DynamicPrintConfig, and the PlateData vector
@@ -76,14 +91,36 @@ void rename_plate(ProjectState& s, const std::string& from, const std::string& t
 // --------------------------------------------------------------------------
 // Object mutations (P3).
 
-// Parameters for add_object. Translate / rotate / scale and --filament are
-// reserved for P4 / P5 and intentionally not present here yet.
+// Parameters for add_object. P4 adds optional translate / rotate / scale;
+// --filament is still reserved for P5.
+//
+// Transform semantics (spec § 4.3):
+//   translate: x,y[,z] in mm, plate-local (0,0 == plate's bed-min corner).
+//              The 2-component form sets z=0.
+//   rotate:    ax,ay,az Euler angles in radians, applied per-instance as
+//              ModelInstance::set_rotation(Vec3d) -- world-space rotation
+//              of the instance about its origin.
+//   scale:     sx,sy,sz per-axis scaling factors applied per-instance via
+//              ModelInstance::set_scaling_factor(Vec3d). The CLI accepts a
+//              uniform scalar `s` which the parser expands to {s,s,s}.
+//
+// When any of {translate,rotate,scale} is set, add_object switches from
+// the deterministic grid placement of P3 to "stacking": all `count`
+// instances share the same post-transform offset. has_explicit_transform()
+// captures that branch condition.
 struct AddObjectParams {
     std::string plate_name;     // target plate (must already exist)
     std::string stl_path;       // path to the STL on disk; also stamped as source
     std::string object_name;    // optional; defaults to STL basename
-    int         count = 1;      // number of instances on the target plate
+    int                          count = 1;   // number of instances on the target plate
+    std::optional<Slic3r::Vec3d> translate;   // plate-local (mm)
+    std::optional<Slic3r::Vec3d> rotate;      // Euler XYZ (radians)
+    std::optional<Slic3r::Vec3d> scale;       // per-axis; uniform `s` -> {s,s,s}
 };
+
+inline bool has_explicit_transform(const AddObjectParams& p) {
+    return p.translate.has_value() || p.rotate.has_value() || p.scale.has_value();
+}
 
 // add_object: load `p.stl_path` as a fresh ModelObject, append it to the
 // project's model, stamp ModelVolume::source with the STL path + a
@@ -94,6 +131,9 @@ struct AddObjectParams {
 //
 //   throws std::out_of_range  if `p.plate_name` is not an existing plate.
 //   throws std::runtime_error if the STL cannot be loaded.
+//   throws PlacementFailure   if has_explicit_transform(p) and the
+//                             resulting world-space AABB falls outside
+//                             the plate's bed (X/Y).
 void add_object(ProjectState& s, const AddObjectParams& p);
 
 // remove_object: remove the first ModelObject whose name matches and rebuild

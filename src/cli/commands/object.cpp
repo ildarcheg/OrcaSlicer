@@ -13,11 +13,14 @@
 
 #include <boost/filesystem.hpp>
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace orca_cli::commands {
 
@@ -34,18 +37,106 @@ int check_input_exists(const GlobalOpts& g, const std::string& path)
     return int(ExitCode::ok);
 }
 
+// Parse a vector flag value:
+//   "x,y"     -> (x, y, 0)
+//   "x,y,z"   -> (x, y, z)
+//   "s"       -> (s, s, s)  -- only when allow_scalar is true
+// Returns std::nullopt on parse failure or if any component is non-finite.
+// Commas and spaces both separate tokens; empty tokens are skipped (so
+// e.g. "60, 60" parses cleanly).
+std::optional<Slic3r::Vec3d> parse_vec3(const std::string& s, bool allow_scalar)
+{
+    if (s.empty()) return std::nullopt;
+    std::vector<double> nums;
+    std::string token;
+    auto flush = [&]() -> bool {
+        if (token.empty()) return true;
+        try {
+            size_t consumed = 0;
+            double v = std::stod(token, &consumed);
+            if (consumed != token.size()) return false;
+            nums.push_back(v);
+        } catch (...) {
+            return false;
+        }
+        token.clear();
+        return true;
+    };
+    for (char ch : s) {
+        if (ch == ',' || ch == ' ' || ch == '\t') {
+            if (!flush()) return std::nullopt;
+        } else {
+            token.push_back(ch);
+        }
+    }
+    if (!flush()) return std::nullopt;
+    for (double v : nums)
+        if (!std::isfinite(v)) return std::nullopt;
+    if (allow_scalar && nums.size() == 1)
+        return Slic3r::Vec3d(nums[0], nums[0], nums[0]);
+    if (nums.size() == 2)
+        return Slic3r::Vec3d(nums[0], nums[1], 0.0);
+    if (nums.size() == 3)
+        return Slic3r::Vec3d(nums[0], nums[1], nums[2]);
+    return std::nullopt;
+}
+
 int do_object_add(const GlobalOpts& g,
                   const std::string& file,
                   const std::string& plate,
                   const std::string& stl,
                   int                count,
-                  const std::string& name)
+                  const std::string& name,
+                  const std::string& translate_str,
+                  const std::string& rotate_str,
+                  const std::string& scale_str)
 {
     if (int rc = check_input_exists(g, file); rc != int(ExitCode::ok))
         return rc;
     if (!fs::exists(stl)) {
         print_err(g, ExitCode::file_not_found, "stl not found: " + stl);
         return int(ExitCode::file_not_found);
+    }
+
+    // Parse transform flags up-front so a bad value is reported as a
+    // usage_error before we touch the archive. CLI11 leaves the strings
+    // empty when the flag wasn't supplied.
+    std::optional<Slic3r::Vec3d> translate, rotate, scale;
+    if (!translate_str.empty()) {
+        translate = parse_vec3(translate_str, /*allow_scalar=*/false);
+        if (!translate) {
+            print_err(g, ExitCode::usage_error,
+                      "invalid --translate value '" + translate_str +
+                      "' (expected x,y or x,y,z)");
+            return int(ExitCode::usage_error);
+        }
+    }
+    if (!rotate_str.empty()) {
+        rotate = parse_vec3(rotate_str, /*allow_scalar=*/false);
+        // --rotate requires all three components; reject the 2-component
+        // form parse_vec3 would otherwise accept.
+        bool ok = rotate.has_value();
+        if (ok) {
+            // Re-parse to check the original had 3 comma-separated parts.
+            int commas = 0;
+            for (char c : rotate_str) if (c == ',') ++commas;
+            if (commas != 2) ok = false;
+        }
+        if (!ok) {
+            print_err(g, ExitCode::usage_error,
+                      "invalid --rotate value '" + rotate_str +
+                      "' (expected ax,ay,az in radians)");
+            return int(ExitCode::usage_error);
+        }
+    }
+    if (!scale_str.empty()) {
+        scale = parse_vec3(scale_str, /*allow_scalar=*/true);
+        if (!scale) {
+            print_err(g, ExitCode::usage_error,
+                      "invalid --scale value '" + scale_str +
+                      "' (expected s or sx,sy,sz)");
+            return int(ExitCode::usage_error);
+        }
     }
 
     const std::string out = resolve_save_target(g, file);
@@ -56,8 +147,15 @@ int do_object_add(const GlobalOpts& g,
         p.stl_path    = stl;
         p.object_name = name;
         p.count       = count;
+        p.translate   = translate;
+        p.rotate      = rotate;
+        p.scale       = scale;
         add_object(state, p);
         save_project(state, out);
+    } catch (const PlacementFailure& e) {
+        // Off-bed -- spec § 4.3: exit 9 placement_failure.
+        print_err(g, ExitCode::placement_failure, e.what());
+        return int(ExitCode::placement_failure);
     } catch (const InvariantViolation& e) {
         print_err(g, ExitCode::invariant_violation, e.what());
         return int(ExitCode::invariant_violation);
@@ -182,6 +280,7 @@ void register_object_subcmd(CLI::App& app, GlobalOpts& g)
     // run_cli() invocations via the in-process spawn path. CLI11 binds
     // by reference.
     static std::string add_file, add_plate, add_stl, add_name;
+    static std::string add_translate, add_rotate, add_scale;
     static int         add_count = 1;
     static std::string rm_file,  rm_name;
     static std::string ls_file;
@@ -196,11 +295,23 @@ void register_object_subcmd(CLI::App& app, GlobalOpts& g)
     add->add_option("--stl",    add_stl,   "STL path to load")->required();
     add->add_option("--count",  add_count, "number of instances (default 1)");
     add->add_option("--name",   add_name,  "object name (default: STL basename)");
+    // Transform flags (P4). Captured as raw strings so we preserve
+    // "unset" vs "explicitly empty" and report parse failures as
+    // usage_error in the callback. When any is supplied, --count N
+    // stacks all N instances at the same post-transform position
+    // (spec § 4.3) instead of grid-placing them.
+    add->add_option("--translate", add_translate,
+                    "plate-local offset, x,y or x,y,z (mm)");
+    add->add_option("--rotate", add_rotate,
+                    "Euler XYZ rotation in radians: ax,ay,az");
+    add->add_option("--scale", add_scale,
+                    "scaling factor: uniform s, or sx,sy,sz");
     add->add_option("--output", g.output,
                     "write result to this path instead of overwriting input");
     add->callback([&g]() {
         std::exit(do_object_add(g, add_file, add_plate, add_stl,
-                                add_count, add_name));
+                                add_count, add_name,
+                                add_translate, add_rotate, add_scale));
     });
 
     // -- object remove -----------------------------------------------------

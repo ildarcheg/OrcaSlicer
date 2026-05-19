@@ -177,28 +177,85 @@ void add_object(ProjectState& s, const AddObjectParams& p)
     // gap so neighboring plates don't visually overlap in the GUI grid.
     const double stride_x = (bed.max.x() - bed.min.x()) + 10.0;
     const double stride_y = (bed.max.y() - bed.min.y()) + 10.0;
-    const Vec3d  offset   = plate_origin_offset(
+    const Vec3d  plate_origin_offset_v = plate_origin_offset(
         plate_idx, int(s.plates.size()), stride_x, stride_y);
-    const BoundingBoxf3 plate_bed(bed.min + offset, bed.max + offset);
+    const BoundingBoxf3 plate_bed(bed.min + plate_origin_offset_v,
+                                  bed.max + plate_origin_offset_v);
 
-    const int   base_idx       = int(plate->objects_and_instances.size());
-    const int   n              = std::max(1, p.count);
-    // total_in_plate = pre-existing instance slots on this plate + the
-    // n new ones we're about to add. Passing this to place_in_plate
-    // freezes the grid width across the batch so prior slots don't get
-    // re-mapped as slot indices grow (see placement.cpp comment).
-    const int   total_in_plate = base_idx + n;
+    const int n       = std::max(1, p.count);
+    const int obj_idx = int(s.model->objects.size() - 1);
     // bounding_box_exact() would force a mesh evaluation across every
     // existing instance; we only care about the volume extent for cell
-    // sizing, so raw_mesh_bounding_box is enough and cheaper.
+    // sizing / AABB checks, so raw_mesh_bounding_box is enough and cheaper.
     const Vec3d bbox_size = obj->raw_mesh_bounding_box().size();
-    const int   obj_idx   = int(s.model->objects.size() - 1);
 
-    for (int i = 0; i < n; ++i) {
-        ModelInstance* inst = obj->add_instance();
-        inst->set_offset(place_in_plate(plate_bed, base_idx + i, total_in_plate, bbox_size));
-        plate->objects_and_instances.emplace_back(obj_idx,
-            int(obj->instances.size() - 1));
+    if (has_explicit_transform(p)) {
+        // Per spec § 4.3: "--count N stacks N copies at the same
+        // post-transform position". All N instances share one offset.
+        //
+        // --translate is plate-local; world_offset folds in the plate's
+        // origin in the GUI's plate-grid layout so a user asking for
+        // (60,60) lands at (60,60) inside the named plate regardless of
+        // which plate it is.
+        const Vec3d local_offset = p.translate.value_or(Vec3d::Zero());
+        const Vec3d world_offset = plate_bed.min + local_offset;
+
+        // World-space AABB check against the plate's bed (X/Y). Use the
+        // post-scale extent so e.g. `--scale 2` doubles the footprint
+        // before we check fit. Rotation is intentionally NOT folded in
+        // here -- a rotated AABB is not the rotated mesh AABB, and the
+        // GUI's own off-bed indicator likewise uses the axis-aligned
+        // pre-rotation bbox.
+        const Vec3d scale_v = p.scale.value_or(Vec3d::Ones());
+        const Vec3d scaled_half = Vec3d(bbox_size.x() * scale_v.x() * 0.5,
+                                        bbox_size.y() * scale_v.y() * 0.5,
+                                        bbox_size.z() * scale_v.z() * 0.5);
+        const double aabb_min_x = world_offset.x() - scaled_half.x();
+        const double aabb_max_x = world_offset.x() + scaled_half.x();
+        const double aabb_min_y = world_offset.y() - scaled_half.y();
+        const double aabb_max_y = world_offset.y() + scaled_half.y();
+        if (aabb_min_x < plate_bed.min.x() || aabb_max_x > plate_bed.max.x() ||
+            aabb_min_y < plate_bed.min.y() || aabb_max_y > plate_bed.max.y()) {
+            throw PlacementFailure(
+                "object AABB falls outside plate bed: translate=(" +
+                std::to_string(local_offset.x()) + "," +
+                std::to_string(local_offset.y()) + ") not within plate '" +
+                p.plate_name + "'");
+        }
+
+        for (int i = 0; i < n; ++i) {
+            ModelInstance* inst = obj->add_instance();
+            inst->set_offset(world_offset);
+            // libslic3r has no ModelObject::set_rotation(Vec3d) /
+            // set_scaling_factor(Vec3d) -- only destructive ModelObject::
+            // rotate/scale which alter the mesh. Per-instance is the
+            // cleaner choice for "rotate/scale the loaded STL once" and
+            // matches how the GUI represents object transforms. We copy
+            // the same rotation/scale onto every stacked instance so the
+            // behavior is identical regardless of which instance the GUI
+            // picks as canonical.
+            if (p.rotate.has_value())
+                inst->set_rotation(*p.rotate);
+            if (p.scale.has_value())
+                inst->set_scaling_factor(*p.scale);
+            plate->objects_and_instances.emplace_back(
+                obj_idx, int(obj->instances.size() - 1));
+        }
+    } else {
+        // No explicit transform: deterministic per-plate grid (P3).
+        const int base_idx       = int(plate->objects_and_instances.size());
+        // total_in_plate = pre-existing instance slots on this plate + the
+        // n new ones we're about to add. Passing this to place_in_plate
+        // freezes the grid width across the batch so prior slots don't
+        // get re-mapped as slot indices grow (see placement.cpp comment).
+        const int total_in_plate = base_idx + n;
+        for (int i = 0; i < n; ++i) {
+            ModelInstance* inst = obj->add_instance();
+            inst->set_offset(place_in_plate(plate_bed, base_idx + i,
+                                            total_in_plate, bbox_size));
+            plate->objects_and_instances.emplace_back(
+                obj_idx, int(obj->instances.size() - 1));
+        }
     }
 }
 
