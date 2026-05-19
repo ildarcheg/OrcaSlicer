@@ -39,7 +39,7 @@ target_link_libraries(cli_tests PRIVATE
 
 add_dependencies(cli_tests orca-cli)
 
-orcaslicer_copy_test_dlls(cli_tests)
+orcaslicer_copy_test_dlls()
 
 include(Catch)
 catch_discover_tests(cli_tests
