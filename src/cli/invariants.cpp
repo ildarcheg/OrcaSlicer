@@ -2,6 +2,9 @@
 
 #include <libslic3r/miniz_extension.hpp>
 
+#include <regex>
+#include <unordered_set>
+
 namespace orca_cli {
 
 std::vector<ZipEntry> unzip_to_memory(const std::string& zip_path)
@@ -29,6 +32,40 @@ std::vector<ZipEntry> unzip_to_memory(const std::string& zip_path)
     return out;
 }
 
-// Concrete invariant implementations land in Tasks 1.5 / 1.6 / 1.7.
+void verify_relationships(const std::vector<ZipEntry>& entries)
+{
+    // Names are case-sensitive inside a .3mf for the file table. Build a set
+    // of every entry name for O(1) target-existence lookup.
+    std::unordered_set<std::string> names;
+    names.reserve(entries.size());
+    for (const auto& e : entries)
+        names.insert(e.name);
+
+    // Match Target="..." in any *.rels file. The 3mf spec uses Target="/foo"
+    // (leading slash optional), so capture the path with the slash stripped.
+    static const std::regex target_re(R"(Target=\"/?([^\"]+)\")");
+
+    for (const auto& e : entries) {
+        if (e.name.size() < 5 ||
+            e.name.compare(e.name.size() - 5, 5, ".rels") != 0)
+            continue;
+
+        const std::string xml(e.bytes.begin(), e.bytes.end());
+        for (auto it = std::sregex_iterator(xml.begin(), xml.end(), target_re);
+             it != std::sregex_iterator{};
+             ++it)
+        {
+            const std::string& target = (*it)[1].str();
+            if (names.find(target) == names.end()) {
+                throw InvariantViolation(
+                    "dangling relationship target: " + target +
+                    " (declared in " + e.name + ")");
+            }
+        }
+    }
+}
+
+// verify_plate_thumbnails and verify_vector_config_roundtrip land in
+// Tasks 1.6 / 1.7.
 
 } // namespace orca_cli
