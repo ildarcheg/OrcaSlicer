@@ -112,6 +112,20 @@ int find_plate_index(const ProjectState& s, const std::string& name)
     return -1;
 }
 
+// Bug C defense (spec section 8): every ModelVolume must have a
+// source.input_file or some Orca / Bambu GUI versions silently drop the
+// part on load. object_idx/volume_idx pair must also be set; pick (0, 0)
+// for the canonical "first volume of first object in the STL" case.
+// Unit + e2e tests assert this.
+void stamp_source_attribution(Slic3r::ModelObject& obj, const std::string& stl_path)
+{
+    for (Slic3r::ModelVolume* vol : obj.volumes) {
+        vol->source.input_file = stl_path;
+        vol->source.object_idx = 0;
+        vol->source.volume_idx = 0;
+    }
+}
+
 } // namespace
 
 void add_object(ProjectState& s, const AddObjectParams& p)
@@ -142,16 +156,7 @@ void add_object(ProjectState& s, const AddObjectParams& p)
         : p.object_name;
     obj->input_file = p.stl_path;
 
-    // Bug C defense (spec section 8): every ModelVolume must have a
-    // source.input_file or some Orca / Bambu GUI versions silently drop
-    // the part on load. object_idx/volume_idx pair must also be set;
-    // pick (0, 0) for the canonical "first volume of first object in the
-    // STL" case. Unit + e2e tests assert this.
-    for (ModelVolume* vol : obj->volumes) {
-        vol->source.input_file = p.stl_path;
-        vol->source.object_idx = 0;
-        vol->source.volume_idx = 0;
-    }
+    stamp_source_attribution(*obj, p.stl_path);
 
     // The reference 3mfs already have at least one instance per copied
     // ModelObject (add_object(const ModelObject&) preserves the original
@@ -176,8 +181,13 @@ void add_object(ProjectState& s, const AddObjectParams& p)
         plate_idx, int(s.plates.size()), stride_x, stride_y);
     const BoundingBoxf3 plate_bed(bed.min + offset, bed.max + offset);
 
-    const int   base_idx  = int(plate->objects_and_instances.size());
-    const int   n         = std::max(1, p.count);
+    const int   base_idx       = int(plate->objects_and_instances.size());
+    const int   n              = std::max(1, p.count);
+    // total_in_plate = pre-existing instance slots on this plate + the
+    // n new ones we're about to add. Passing this to place_in_plate
+    // freezes the grid width across the batch so prior slots don't get
+    // re-mapped as slot indices grow (see placement.cpp comment).
+    const int   total_in_plate = base_idx + n;
     // bounding_box_exact() would force a mesh evaluation across every
     // existing instance; we only care about the volume extent for cell
     // sizing, so raw_mesh_bounding_box is enough and cheaper.
@@ -186,7 +196,7 @@ void add_object(ProjectState& s, const AddObjectParams& p)
 
     for (int i = 0; i < n; ++i) {
         ModelInstance* inst = obj->add_instance();
-        inst->set_offset(place_in_plate(plate_bed, base_idx + i, bbox_size));
+        inst->set_offset(place_in_plate(plate_bed, base_idx + i, total_in_plate, bbox_size));
         plate->objects_and_instances.emplace_back(obj_idx,
             int(obj->instances.size() - 1));
     }

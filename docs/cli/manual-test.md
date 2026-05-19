@@ -85,12 +85,10 @@ Copy-Item $REF $OUT -Force
 & $CLI object list $OUT
 ```
 
-Expected: four new ModelObjects (1 `cyl` + 3 instances of `cone`) are
-appended to the project, with the `Brackets` plate carrying their
-instance entries on save. When `$OUT` opens in OrcaSlicer all four
-objects render and slice (Bug C defended -- every ModelVolume has
-`source.input_file` stamped to the STL path so the GUI does not silently
-drop the part on load).
+Expected: 2 new ModelObjects on the `Brackets` plate -- `cyl` (1 instance)
+and `cone` (3 instances). All 4 instances render in OrcaSlicer (Bug C
+defended -- every ModelVolume has `source.input_file` stamped to the STL
+path so the GUI does not silently drop the part on load).
 
 Note: `orca-cli object list` and `orca-cli plate list` currently display
 0 objects per plate even on the unmodified reference 3mf. That is a

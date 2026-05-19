@@ -1,6 +1,8 @@
 #include <catch2/catch_all.hpp>
 #include "placement.hpp"
 
+#include <vector>
+
 using namespace orca_cli;
 using namespace Slic3r;
 
@@ -9,7 +11,7 @@ TEST_CASE("orca-cli: place_in_plate first object anchored at bed-min + margin + 
 {
     BoundingBoxf3 bed(Vec3d(0, 0, 0), Vec3d(200, 200, 200));
     Vec3d bbox(20, 20, 20);
-    Vec3d p = place_in_plate(bed, 0, bbox);
+    Vec3d p = place_in_plate(bed, 0, 1, bbox);
     // margin 10 + half-width 10 = 20.
     REQUIRE_THAT(p.x(), Catch::Matchers::WithinAbs(20.0, 0.001));
     REQUIRE_THAT(p.y(), Catch::Matchers::WithinAbs(20.0, 0.001));
@@ -22,9 +24,9 @@ TEST_CASE("orca-cli: place_in_plate later objects fill the grid without overlap"
 {
     BoundingBoxf3 bed(Vec3d(0, 0, 0), Vec3d(200, 200, 200));
     Vec3d bbox(20, 20, 20);
-    Vec3d p0 = place_in_plate(bed, 0, bbox);
-    Vec3d p1 = place_in_plate(bed, 1, bbox);
-    Vec3d p2 = place_in_plate(bed, 2, bbox);
+    Vec3d p0 = place_in_plate(bed, 0, 3, bbox);
+    Vec3d p1 = place_in_plate(bed, 1, 3, bbox);
+    Vec3d p2 = place_in_plate(bed, 2, 3, bbox);
 
     // Distinct slots must land at distinct positions.
     REQUIRE_FALSE((p0 - p1).norm() < 1.0);
@@ -37,11 +39,31 @@ TEST_CASE("orca-cli: place_in_plate is deterministic",
 {
     BoundingBoxf3 bed(Vec3d(0, 0, 0), Vec3d(200, 200, 200));
     Vec3d bbox(20, 20, 20);
-    Vec3d a = place_in_plate(bed, 5, bbox);
-    Vec3d b = place_in_plate(bed, 5, bbox);
+    Vec3d a = place_in_plate(bed, 5, 6, bbox);
+    Vec3d b = place_in_plate(bed, 5, 6, bbox);
     REQUIRE_THAT(a.x(), Catch::Matchers::WithinAbs(b.x(), 1e-9));
     REQUIRE_THAT(a.y(), Catch::Matchers::WithinAbs(b.y(), 1e-9));
     REQUIRE_THAT(a.z(), Catch::Matchers::WithinAbs(b.z(), 1e-9));
+}
+
+TEST_CASE("orca-cli: place_in_plate produces pairwise-distinct positions for 8 slots in one batch",
+          "[orca-cli][P3][unit]")
+{
+    // Regression for the per-slot grid recompute bug: when cols was
+    // derived from ceil(sqrt(slot+1)) per call, the grid width grew as
+    // slots advanced and re-mapped prior cells. e.g. slot 3 of 4 landed
+    // at (col=1,row=1); slot 4 of 5 also landed at (col=1,row=1).
+    // Fixing the grid via total_in_plate restores pairwise distinctness.
+    BoundingBoxf3 bed(Vec3d(0, 0, 0), Vec3d(300, 300, 200));
+    Vec3d bbox(20, 20, 20);
+    constexpr int N = 8;
+    std::vector<Vec3d> positions;
+    for (int i = 0; i < N; ++i) positions.push_back(place_in_plate(bed, i, N, bbox));
+    for (int i = 0; i < N; ++i)
+        for (int j = i + 1; j < N; ++j) {
+            INFO("slot " << i << " vs slot " << j);
+            REQUIRE((positions[i] - positions[j]).norm() > 1.0);
+        }
 }
 
 TEST_CASE("orca-cli: plate_origin_offset single plate is zero",

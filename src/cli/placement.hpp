@@ -16,8 +16,8 @@
 //
 // In add_object() the two are composed: target_bed = bed shifted by
 // plate_origin_offset(target, total, stride_x, stride_y), then
-// place_in_plate(target_bed, base_idx + i, bbox_size) for each new
-// instance. See src/cli/project_ops.cpp::add_object.
+// place_in_plate(target_bed, base_idx + i, total_in_plate, bbox_size)
+// for each new instance. See src/cli/project_ops.cpp::add_object.
 #include <libslic3r/Point.hpp>
 #include <libslic3r/BoundingBox.hpp>
 
@@ -34,12 +34,15 @@ using Slic3r::BoundingBoxf3;
 Vec3d plate_origin_offset(int plate_index, int total_plates,
                           double stride_x, double stride_y);
 
-// Within-plate grid placement. Returns the center position of object N
-// (0-based) inside the plate's bed. Anchored at bed.min + a 10 mm
-// margin. Square grid: cols = ceil(sqrt(slot + 1)). Cell width / height
-// is max(bbox_size + margin, default_cell). Z is bed.min.z() so the
-// object sits on the bed.
-Vec3d place_in_plate(const BoundingBoxf3& bed, int idx_in_plate,
+// Returns the center position of object idx_in_plate (0-based) inside the
+// plate's bed. cols/rows are derived from total_in_plate (>= idx_in_plate+1)
+// so all slots in the same batch lie on a stable grid.
+// Anchored at bed.min + a 10 mm margin. Cell width / height is
+// max(bbox_size + margin, default_cell). Z is bed.min.z() so the object
+// sits on the bed.
+Vec3d place_in_plate(const BoundingBoxf3& bed,
+                     int idx_in_plate,
+                     int total_in_plate,
                      const Vec3d& bbox_size);
 
 } // namespace orca_cli

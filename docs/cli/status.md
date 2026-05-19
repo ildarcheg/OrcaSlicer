@@ -82,8 +82,9 @@ Updated by each phase.
       `assert_parts_have_source_file` (source_file metadata present on
       every `<part>` in `Metadata/model_settings.config`).
 - [ ] Manual GUI smoke: open the P3 manual-test output in OrcaSlicer
-      and verify the 4 new objects (1 cylinder + 3 cones) render and
-      slice on `Brackets`. (Pending separate manual verification per
+      and verify 2 new ModelObjects on `Brackets` -- `cyl` (1 instance)
+      and `cone` (3 instances) -- all 4 instances render and slice.
+      (Pending separate manual verification per
       `docs/cli/manual-test.md` -> Phase 3.)
 - [Known limitation] `orca-cli {plate,object} list` displays 0 objects
       per plate even on the unmodified reference 3mf. This is a

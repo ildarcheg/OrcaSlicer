@@ -26,20 +26,30 @@ Vec3d plate_origin_offset(int plate_index, int total_plates,
                  0.0);
 }
 
-Vec3d place_in_plate(const BoundingBoxf3& bed, int idx_in_plate,
+Vec3d place_in_plate(const BoundingBoxf3& bed,
+                     int idx_in_plate,
+                     int total_in_plate,
                      const Vec3d& bbox_size)
 {
     constexpr double margin = 10.0;
 
-    const int slot = std::max(0, idx_in_plate);
-    int cols = int(std::ceil(std::sqrt(double(slot + 1))));
+    // cols is derived from total_in_plate (not slot+1) so every slot in
+    // the same batch sees the same grid width and prior cells don't get
+    // re-mapped as the batch grows. Bug: with the slot+1 form,
+    // ceil(sqrt(4))=2 mapped slot 3 to (col=1,row=1), then
+    // ceil(sqrt(5))=3 mapped slot 4 to (col=1,row=1) too -- two
+    // instances landed at the same position. See the pairwise-distinct
+    // regression test in tests/cli/unit/test_placement.cpp.
+    const int slot  = std::max(0, idx_in_plate);
+    const int total = std::max(1, total_in_plate);
+    int cols = int(std::ceil(std::sqrt(double(total))));
     if (cols < 1) cols = 1;
     const int col = slot % cols;
     const int row = slot / cols;
 
     // Cell size = max(bbox extent + margin, a default 20 mm cell) so tiny
     // objects don't collapse on top of each other. Deterministic per
-    // (slot, bbox_size).
+    // (slot, total, bbox_size).
     const double cell_x = std::max(bbox_size.x() + margin, 20.0);
     const double cell_y = std::max(bbox_size.y() + margin, 20.0);
 
