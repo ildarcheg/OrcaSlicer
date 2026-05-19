@@ -46,8 +46,11 @@ std::vector<char> make_placeholder_png_128_gray_C0()
 {
     constexpr uint32_t W = 128;
     constexpr uint32_t H = 128;
+    // Spec section 4.2: every pixel byte (R, G, B, AND alpha) equals 0xC0.
+    // The function name encodes this contract -- "gray_C0" means all four
+    // channels are 0xC0, not just RGB-with-opaque-alpha.
     constexpr uint8_t  GRAY = 0xC0;
-    constexpr uint8_t  ALPHA = 0xFF;
+    constexpr uint8_t  ALPHA = 0xC0;
 
     // Build the raw scanlines: each row starts with a filter byte (0 = None),
     // followed by W RGBA pixels.
