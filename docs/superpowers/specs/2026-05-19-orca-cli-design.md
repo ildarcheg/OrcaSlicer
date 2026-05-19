@@ -220,11 +220,25 @@ No `--force`. No `--allow-broken`. If an invariant fails, the user fixes the inp
 
 ### 6.2 Fixtures
 
-Reference 3mf path comes from CMake cache var `ORCA_CLI_REF_3MF`. If unset or missing, tests `SUCCEED+skip` so CI without local fixtures still passes.
+Canonical fixtures live in `C:\Users\ildarcheg\Documents\GitHub\slicer_tamplates\` (note the literal directory name; sic on spelling). This directory is shared with the sister `bambu-cli` workstream, which uses its own template alongside ours.
 
-Three STLs (cylinder, cone, cube): committed minimal versions in-tree (small, non-zero normals per G7) plus user's real fixtures via `ORCA_CLI_STL_{CYLINDER,CONE,CUBE}` cache vars.
+| Path | Role |
+|---|---|
+| `C:\Users\ildarcheg\Documents\GitHub\slicer_tamplates\temp_project_for_orca_slicer.3mf` | Reference 3mf for orca-cli. Authored in OrcaSlicer's GUI. **Never modify in place** — every test copies to `$TEMP` first. |
+| `C:\Users\ildarcheg\Documents\GitHub\slicer_tamplates\000_01_test_cylinder.stl` | Object-add fixture (cylinder). |
+| `C:\Users\ildarcheg\Documents\GitHub\slicer_tamplates\000_01_test_cone.stl` | Object-add fixture (cone). |
+| `C:\Users\ildarcheg\Documents\GitHub\slicer_tamplates\000_01_test_bambu_cube.stl` | Object-add fixture (cube, larger). |
+| `C:\Users\ildarcheg\Documents\GitHub\slicer_tamplates\000_01_test_cube.stl` | Object-add fixture (cube, minimal). |
+| `C:\Users\ildarcheg\Documents\GitHub\slicer_tamplates\temp_project_for_bambu_studio.3mf` | Sister-project template; **not used by orca-cli**, listed here so we don't accidentally point at it. |
 
-Reference 3mf is **never modified in place**. Every test copies it to `$TEMP` first (see `[[reference-orca-cli-fixtures]]` memory).
+CMake cache vars expose these paths to the test build:
+
+- `ORCA_CLI_REF_3MF` — defaults to `temp_project_for_orca_slicer.3mf` above.
+- `ORCA_CLI_STL_DIR` — defaults to the parent directory; individual STL filenames are resolved relative to it.
+
+If any path is unset or missing on the host, the test that needs it `SUCCEED+skip`s so CI without local fixtures still passes. Committed in-tree minimal STLs (small, non-zero normals per G7) live under `tests/cli/fixtures/` for the CI path; the user-tree paths above are the local-development fixtures.
+
+The reference 3mf is **never modified in place**. Every test copies it to `$TEMP` before opening for write. The current canonical fixture set is also pinned in the `[[reference-orca-cli-fixtures]]` memory.
 
 ### 6.3 Per-feature manual GUI smoke
 
