@@ -21,7 +21,7 @@ const char* code_name(ExitCode c)
     return "unknown";
 }
 
-static std::string escape_json(std::string_view s)
+std::string escape_json(std::string_view s)
 {
     std::string out;
     out.reserve(s.size() + 2);

@@ -145,7 +145,7 @@ int do_plate_list(const GlobalOpts& g, const std::string& input)
             if (!first) plates_json += ",";
             first = false;
             plates_json += "{\"index\":" + std::to_string(i + 1)
-                        + ",\"name\":\""  + state.plates[i]->plate_name + "\""
+                        + ",\"name\":\""  + escape_json(state.plates[i]->plate_name) + "\""
                         + ",\"object_count\":"
                         + std::to_string(state.plates[i]->objects_and_instances.size())
                         + "}";

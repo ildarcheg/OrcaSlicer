@@ -23,4 +23,7 @@ const char* code_name(ExitCode c);
 void print_ok (const GlobalOpts& opts, std::string_view message, std::string_view data_json = {});
 void print_err(const GlobalOpts& opts, ExitCode code, std::string_view message);
 
+// Escapes a string for safe embedding inside a JSON value.
+std::string escape_json(std::string_view s);
+
 } // namespace orca_cli

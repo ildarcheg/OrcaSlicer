@@ -109,3 +109,18 @@ TEST_CASE("orca-cli: plate list prints plate count",
     REQUIRE(r.exit_code == 0);
     REQUIRE(r.stdout_.find("plate") != std::string::npos);
 }
+
+TEST_CASE("orca-cli: plate list --json escapes plate names with special characters", "[orca-cli][P2][e2e]") {
+    if (ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+    auto tmp = make_temp_dir();
+    auto in  = copy_ref_to_temp(tmp, "plate-list-json-escape");
+    // Plate name with a double-quote and a backslash.
+    REQUIRE(run_cli({"plate","add",in.string(),"--name","Tricky\"Name\\Here"}).exit_code == 0);
+    auto r = run_cli({"--json","plate","list",in.string()});
+    REQUIRE(r.exit_code == 0);
+    // The output must contain the properly-escaped sequence:
+    // "Tricky\"Name\\Here"  (each backslash literally doubled in source)
+    REQUIRE(r.stdout_.find("Tricky\\\"Name\\\\Here") != std::string::npos);
+    // And must NOT contain the unescaped literal.
+    REQUIRE(r.stdout_.find("\"Tricky\"Name\\Here\"") == std::string::npos);
+}
