@@ -200,12 +200,19 @@ void add_object(ProjectState& s, const AddObjectParams& p)
         const Vec3d local_offset = p.translate.value_or(Vec3d::Zero());
         const Vec3d world_offset = plate_bed.min + local_offset;
 
-        // World-space AABB check against the plate's bed (X/Y). Use the
-        // post-scale extent so e.g. `--scale 2` doubles the footprint
-        // before we check fit. Rotation is intentionally NOT folded in
-        // here -- a rotated AABB is not the rotated mesh AABB, and the
-        // GUI's own off-bed indicator likewise uses the axis-aligned
-        // pre-rotation bbox.
+        // Off-bed AABB check.
+        //
+        // ASSUMPTION: the loaded STL's local origin coincides with its bbox center
+        // (which is the case for STLs the GUI authors, and for our committed test
+        // fixtures). For STLs with origin-at-corner, the world AABB used here is
+        // shifted by half the extent from the true mesh AABB, so this check is
+        // conservative for centered STLs and slightly off for corner-origin ones.
+        // Matches the GUI's own off-bed indicator which uses the same approximation.
+        //
+        // Scale is folded into the half-extent so e.g. --scale 2 near a bed edge
+        // trips the check. Rotation is intentionally NOT folded in (a rotated mesh's
+        // AABB differs from the axis-aligned local-frame AABB; the GUI also doesn't
+        // rotate-then-AABB for its off-bed indicator).
         const Vec3d scale_v = p.scale.value_or(Vec3d::Ones());
         const Vec3d scaled_half = Vec3d(bbox_size.x() * scale_v.x() * 0.5,
                                         bbox_size.y() * scale_v.y() * 0.5,

@@ -360,6 +360,39 @@ TEST_CASE("orca-cli: --translate with bad value returns usage_error",
     REQUIRE(r.exit_code == 1); // usage_error
 }
 
+TEST_CASE("orca-cli: --translate '60,,60' (empty middle token) returns usage_error", "[orca-cli][P4][e2e]") {
+    if (ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+    auto tmp = make_temp_dir();
+    auto in  = copy_ref_to_temp(tmp, "obj-empty-token");
+    auto cube = (stl_dir() / "000_01_test_cube.stl").string();
+    auto r = run_cli({"object","add",in.string(),"--plate","Plate 01 test","--stl",cube,
+                      "--translate","60,,60"});
+    REQUIRE(r.exit_code == 1);  // usage_error
+}
+
+TEST_CASE("orca-cli: --scale '1,2' (2-component) returns usage_error", "[orca-cli][P4][e2e]") {
+    if (ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+    auto tmp = make_temp_dir();
+    auto in  = copy_ref_to_temp(tmp, "obj-scale-2comp");
+    auto cube = (stl_dir() / "000_01_test_cube.stl").string();
+    auto r = run_cli({"object","add",in.string(),"--plate","Plate 01 test","--stl",cube,
+                      "--scale","1,2"});
+    REQUIRE(r.exit_code == 1);
+}
+
+TEST_CASE("orca-cli: --scale '1' (uniform scalar) succeeds", "[orca-cli][P4][e2e]") {
+    if (ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+    auto tmp = make_temp_dir();
+    auto in  = copy_ref_to_temp(tmp, "obj-scale-1");
+    auto cube = (stl_dir() / "000_01_test_cube.stl").string();
+    // --translate "60,60" is supplied to keep the AABB inside the plate
+    // (matches the pattern of the existing --scale 2 P4 test); the point
+    // here is that the uniform-scalar arity is still accepted post-fix.
+    auto r = run_cli({"object","add",in.string(),"--plate","Plate 01 test","--stl",cube,
+                      "--translate","60,60","--scale","1","--name","unit"});
+    REQUIRE(r.exit_code == 0);
+}
+
 TEST_CASE("orca-cli: object list reports the plate name for objects on plates", "[orca-cli][P3][e2e]") {
     if (ref_3mf().empty()) { SUCCEED("Skipped"); return; }
     auto cube = (stl_dir() / "000_01_test_cube.stl");
