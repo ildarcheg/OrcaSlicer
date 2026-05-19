@@ -144,4 +144,22 @@ void add_object(ProjectState& s, const AddObjectParams& p);
 //   throws std::out_of_range if no object with that name exists.
 void remove_object(ProjectState& s, const std::string& object_name);
 
+// --------------------------------------------------------------------------
+// Filament slot assignment (P5).
+//
+// set_object_filament: stamp `extruder = filament_slot` on the named
+// ModelObject's per-object config. The filament slot is a 1-based index
+// into the project's filament_settings_id (a ConfigOptionStrings whose
+// .values.size() determines the legal range).
+//
+//   throws std::out_of_range if no object with that name exists.
+//   throws std::out_of_range if filament_slot < 1 or
+//          filament_slot > filament_settings_id.values.size().
+//
+// Both error modes share std::out_of_range so the command catch chain
+// in commands/object.cpp maps the whole class of "unknown reference"
+// failures (unknown plate, unknown object, out-of-range slot) to
+// ExitCode::unknown_reference (exit 6) -- no new exit code required.
+void set_object_filament(ProjectState& s, const std::string& object_name, int filament_slot);
+
 } // namespace orca_cli

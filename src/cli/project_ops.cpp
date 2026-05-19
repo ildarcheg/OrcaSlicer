@@ -266,6 +266,44 @@ void add_object(ProjectState& s, const AddObjectParams& p)
     }
 }
 
+void set_object_filament(ProjectState& s, const std::string& object_name, int filament_slot)
+{
+    using namespace Slic3r;
+
+    // Locate the named ModelObject.
+    ModelObject* obj = nullptr;
+    for (auto* o : s.model->objects) {
+        if (o->name == object_name) { obj = o; break; }
+    }
+    if (!obj)
+        throw std::out_of_range("object not found: " + object_name);
+
+    // Determine the legal slot range from the project's filament_settings_id.
+    // This is a ConfigOptionStrings whose .values.size() is the number of
+    // filament profiles wired into the project. A reference 3mf for an
+    // AMS-equipped Bambu printer typically has 4 or more slots; the
+    // committed fixture has 6.
+    int slot_count = 0;
+    if (s.project_config) {
+        if (const auto* fsid = s.project_config->option<ConfigOptionStrings>("filament_settings_id"))
+            slot_count = int(fsid->values.size());
+    }
+
+    if (filament_slot < 1 || filament_slot > slot_count) {
+        throw std::out_of_range(
+            "filament slot " + std::to_string(filament_slot) +
+            " out of range [1.." + std::to_string(slot_count) +
+            "] for object '" + object_name + "'");
+    }
+
+    // ModelConfigObject::set<int>("extruder", N) constructs a ConfigOptionInt
+    // under the hood (m_data.set(key, value, /*create=*/true)) and bumps the
+    // model-config timestamp. This is the same call-site shape used by the
+    // GUI's MMU and "set extruder" paths (see GUI_ObjectList.cpp:2819,
+    // ObjColorDialog.cpp:441) and by libslic3r itself in Model.cpp:3066.
+    obj->config.set("extruder", filament_slot);
+}
+
 void remove_object(ProjectState& s, const std::string& object_name)
 {
     using namespace Slic3r;

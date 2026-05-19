@@ -257,3 +257,70 @@ TEST_CASE("orca-cli: remove_object rejects unknown name",
     REQUIRE_THROWS_AS(remove_object(s, "ghost-does-not-exist"),
                       std::out_of_range);
 }
+
+// -- P5: set_object_filament -----------------------------------------------
+
+TEST_CASE("orca-cli: set_object_filament writes extruder on per-object config",
+          "[orca-cli][P5][unit]")
+{
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+    auto stl = (orca_cli_test::stl_dir() / "000_01_test_cube.stl");
+    if (!boost::filesystem::exists(stl)) { SUCCEED("Skipped"); return; }
+
+    auto s = load_project(orca_cli_test::ref_3mf().string());
+    add_plate(s, "F5Test");
+
+    AddObjectParams p;
+    p.plate_name  = "F5Test";
+    p.stl_path    = stl.string();
+    p.object_name = "fcube";
+    add_object(s, p);
+
+    set_object_filament(s, "fcube", 2);
+
+    // Verify by reading the object's config directly. The reference 3mf
+    // has 6 filament slots (Bambu PLA Basic @BBL A1 x6), so slot 2 is
+    // safely in range.
+    Slic3r::ModelObject* obj = nullptr;
+    for (auto* o : s.model->objects)
+        if (o->name == "fcube") obj = o;
+    REQUIRE(obj != nullptr);
+    REQUIRE(obj->config.has("extruder"));
+    const auto* opt = obj->config.option("extruder");
+    REQUIRE(opt != nullptr);
+    REQUIRE(obj->config.opt_int("extruder") == 2);
+}
+
+TEST_CASE("orca-cli: set_object_filament rejects out-of-range slot",
+          "[orca-cli][P5][unit]")
+{
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+    auto stl = (orca_cli_test::stl_dir() / "000_01_test_cube.stl");
+    if (!boost::filesystem::exists(stl)) { SUCCEED("Skipped"); return; }
+
+    auto s = load_project(orca_cli_test::ref_3mf().string());
+    add_plate(s, "F5Test2");
+
+    AddObjectParams p;
+    p.plate_name  = "F5Test2";
+    p.stl_path    = stl.string();
+    p.object_name = "fc";
+    add_object(s, p);
+
+    // Reference 3mf has 6 slots; 99 and 0 are both out of range. Slot 7
+    // (just past the high end) is also asserted, to defend against an
+    // off-by-one in the upper bound.
+    REQUIRE_THROWS_AS(set_object_filament(s, "fc", 99), std::out_of_range);
+    REQUIRE_THROWS_AS(set_object_filament(s, "fc", 7),  std::out_of_range);
+    REQUIRE_THROWS_AS(set_object_filament(s, "fc", 0),  std::out_of_range);
+    REQUIRE_THROWS_AS(set_object_filament(s, "fc", -1), std::out_of_range);
+}
+
+TEST_CASE("orca-cli: set_object_filament rejects unknown object",
+          "[orca-cli][P5][unit]")
+{
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+
+    auto s = load_project(orca_cli_test::ref_3mf().string());
+    REQUIRE_THROWS_AS(set_object_filament(s, "ghost", 1), std::out_of_range);
+}
