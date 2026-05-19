@@ -176,3 +176,44 @@ Anti-cases (each should exit non-zero with a clean message):
 & $CLI object set-filament $OUT --name ghost --filament 1
 # expected: exit 6 (unknown_reference - object name not found)
 ```
+
+## Phase 6 - config
+
+```powershell
+$OUT = "$env:TEMP\orca-cli-p6.3mf"
+Copy-Item $REF $OUT -Force
+& $CLI plate  add  $OUT --name C
+& $CLI object add  $OUT --plate C --stl "$STLS\000_01_test_cube.stl" --name cubeC
+& $CLI config set  $OUT --object cubeC --key wall_loops --value 4
+& $CLI config set  $OUT --key sparse_infill_density --value 30%
+& $CLI config list $OUT --object cubeC --changed-only
+& $CLI config list $OUT --changed-only
+```
+
+Expected: in OrcaSlicer's per-object settings pane, `cubeC` shows
+`wall_loops = 4`; in the global process-settings pane,
+`sparse_infill_density = 30%`. Both `config list` commands print
+non-empty key/value output (one `<key> = <value>` line per key). The
+project-level `--changed-only` listing surfaces hundreds of keys
+because the reference 3mf carries a fully-populated Bambu A1 profile;
+the per-object listing surfaces just the explicit `wall_loops` we
+set.
+
+Anti-cases (each should exit non-zero with a clean message):
+
+```powershell
+& $CLI config set   $OUT --key no_such_key --value 1
+# expected: exit 4 (bad_config - key not in print_config_def)
+
+& $CLI config set   $OUT --key layer_height --value not-a-num
+# expected: exit 4 (bad_config - value rejected by set_deserialize)
+
+& $CLI config set   $OUT --object ghost --key wall_loops --value 2
+# expected: exit 6 (unknown_reference - object name not found)
+
+& $CLI config unset $OUT --key no_such_key
+# expected: exit 4 (bad_config - key not in print_config_def)
+
+& $CLI config list  $OUT --output anywhere.3mf
+# expected: exit 1 (usage_error - --output not allowed on list)
+```

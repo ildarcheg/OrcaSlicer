@@ -173,3 +173,67 @@ Updated by each phase.
       in the object panel; both render and slice normally on plate F.
       (Pending separate manual verification per
       `docs/cli/manual-test.md` -> Phase 5.)
+
+## Phase 6 - config
+
+- [x] New `BadConfigError` exception in `project_ops.hpp` so unknown
+      / malformed config keys map to `ExitCode::bad_config` (exit 4)
+      instead of being misreported as `duplicate_name` by the
+      `std::invalid_argument` mapping the plate command catch-chain
+      uses.
+- [x] `set_project_config` / `set_object_config` in `project_ops.cpp`
+      validate `key` against `print_config_def`, then delegate the
+      value parse to libslic3r's `set_deserialize` with a Disable
+      substitution context. Strict parsing: a value libslic3r rejects
+      (out-of-range int, malformed enum, ...) surfaces as
+      `BadConfigError` -> exit 4 rather than silently falling through
+      to a default.
+- [x] `unset_project_config` / `unset_object_config` remove a key
+      after the same `print_config_def` validation. Erasing an
+      already-unset key is a no-op (matches the GUI's "reset to
+      default" affordance), but a typo on the key name surfaces as
+      `BadConfigError` -> exit 4.
+- [x] `changed_project_keys` builds a defaults config via
+      `DynamicPrintConfig::new_from_defaults_keys` restricted to the
+      project's actual key set, then runs `DynamicConfig::diff` to
+      pick out the differ-from-default keys. Spec G6 -- this avoids
+      `default_value->serialize()` which crashes on `coEnum` defaults.
+- [x] `object_config_keys` returns the explicitly-set keys on a
+      ModelObject's `ModelConfigObject`. The per-object config only
+      ever stores set keys (the GUI populates it lazily as the user
+      touches settings), so this IS the change-set -- no diff needed.
+- [x] `orca-cli config {set,unset,list} <file> [--key K] [--value V]
+      [--object N] [--output O] [--changed-only]` end-to-end via the
+      standard load -> mutate -> save flow. `set` and `unset` accept
+      `--output` for the side-car round-trip; `list` rejects
+      `--output` with `usage_error` (exit 1).
+- [x] Vector-typed keys (`coPoint*`, `coStrings`, ...) pass straight
+      through to libslic3r's per-option deserializer; no separator
+      translation in v2's code path (the Bug A path was the v1.x
+      `apply_preset_kvs` flow which v2 doesn't have). The vector-
+      config roundtrip invariant guard from P1 catches any regression
+      where the deserialized form doesn't byte-identically round-trip
+      back through the serializer.
+- [x] Catch chain in `commands/config.cpp` maps `BadConfigError` ->
+      exit 4 (bad_config) and `std::out_of_range` -> exit 6
+      (unknown_reference). The `BadConfigError` catch sits BEFORE
+      the generic `std::exception` fallback so a typo on the key name
+      doesn't get bucketed as `parse_failure`.
+- [x] JSON `list` output uses `escape_json` for both key and value
+      so a config value containing quotes / backslashes / control
+      characters can't break the surrounding `keys` array object.
+- [x] e2e: 12 new tests in `tests/cli/e2e/test_config.cpp` cover
+      project-level set, per-object set, unknown key (exit 4), bad
+      value (exit 4), unknown object (exit 6), unset, unknown-key
+      unset (exit 4), project list, `--changed-only` list (G6 smoke),
+      `--output` on list (exit 1), per-object list, and the
+      `--output` side-car round-trip. Plus 10 new unit tests covering
+      the project_ops layer directly.
+- [x] All P0-P5 tests still pass (regression check). Test count
+      moved from 79 cases / 65974 assertions (baseline) to 101 cases
+      / 66020 assertions.
+- [ ] Manual GUI smoke: open the P6 manual-test output in OrcaSlicer
+      and verify `cubeC` shows `wall_loops = 4` in the per-object
+      settings panel and the global process-settings panel shows
+      `sparse_infill_density = 30%`. (Pending separate manual
+      verification per `docs/cli/manual-test.md` -> Phase 6.)
