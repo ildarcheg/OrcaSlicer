@@ -317,14 +317,21 @@ ProjectState load_project(const std::string& path)
     // pairing. The loader fills in obj_inst_map (plate-side identify_id mapping)
     // but does not always rebuild objects_and_instances in the form the saver
     // expects, so re-derive it here from ModelInstance::loaded_id.
+    //
+    // PlateData::obj_inst_map is std::map<int, std::pair<int, int>> keyed by
+    // object_id, with value pair<instance_id, identify_id>. The identify_id
+    // that matches ModelInstance::loaded_id lives in `value.second`, not in
+    // the map key. Using the key (object_id) here would never match
+    // loaded_id, leaving objects_and_instances empty and causing
+    // `orca-cli object list` to report every object as on an unnamed plate.
     for (auto& plate : s.plates) {
         plate->objects_and_instances.clear();
         for (const auto& kv : plate->obj_inst_map) {
-            const int identify_id = kv.first;
+            const int identify_id = kv.second.second;
             for (size_t oi = 0; oi < s.model->objects.size(); ++oi) {
                 const ModelObject* obj = s.model->objects[oi];
                 for (size_t ii = 0; ii < obj->instances.size(); ++ii) {
-                    if (obj->instances[ii]->loaded_id == identify_id) {
+                    if (int(obj->instances[ii]->loaded_id) == identify_id) {
                         plate->objects_and_instances.emplace_back(int(oi), int(ii));
                     }
                 }

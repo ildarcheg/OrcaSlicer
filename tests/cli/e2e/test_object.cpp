@@ -158,3 +158,21 @@ TEST_CASE("orca-cli: object list lists objects",
     REQUIRE(r.exit_code == 0);
     REQUIRE(r.stdout_.find("listed") != std::string::npos);
 }
+
+TEST_CASE("orca-cli: object list reports the plate name for objects on plates", "[orca-cli][P3][e2e]") {
+    if (ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+    auto cube = (stl_dir() / "000_01_test_cube.stl");
+    if (!fs::exists(cube)) { SUCCEED("Skipped: no cube fixture"); return; }
+
+    auto tmp = make_temp_dir();
+    auto in  = copy_ref_to_temp(tmp, "obj-list-plate");
+    REQUIRE(run_cli({"plate","add",in.string(),"--name","Listed"}).exit_code == 0);
+    REQUIRE(run_cli({"object","add",in.string(),"--plate","Listed","--stl",cube.string(),
+                     "--name","listobj"}).exit_code == 0);
+
+    auto r = run_cli({"--json","object","list",in.string()});
+    REQUIRE(r.exit_code == 0);
+    // The JSON output must contain the plate name for the added object.
+    INFO(r.stdout_);
+    REQUIRE(r.stdout_.find("\"name\":\"listobj\",\"plate\":\"Listed\"") != std::string::npos);
+}
