@@ -92,3 +92,50 @@ Updated by each phase.
       P3 regression -- the on-disk `objects_and_instances` are written
       correctly by `add_object` -> `save_project` (OrcaSlicer loads
       them fine). Fix scheduled for a later phase.
+
+## Phase 4 - object transforms
+
+- [x] `AddObjectParams` extended with `std::optional<Vec3d>` translate /
+      rotate / scale, plus a `has_explicit_transform()` helper. The
+      `--translate` flag is plate-local (0,0 == plate's bed-min corner)
+      and folds in the per-plate origin offset that P3 already applies
+      to grid placement.
+- [x] `parse_vec3` in `commands/object.cpp` accepts 2-component
+      (z=0 default) and 3-component vectors; `--scale` additionally
+      accepts a uniform scalar `s` which expands to `{s,s,s}`. Each
+      flag is captured as an optional string so CLI11's "unset" state
+      is preserved; bad values report `usage_error` (exit 1) before
+      the archive is touched.
+- [x] `add_object` instance loop branches on `has_explicit_transform`:
+      when any transform is supplied, all `--count N` instances stack
+      at the same post-transform position (spec § 4.3); otherwise the
+      deterministic per-plate grid from P3 fires. Both branches apply
+      the per-plate origin offset, so a stack on plate N still lands
+      at world `(plate_origin + local_translate)`.
+- [x] Rotation and scale are applied per-instance via
+      `ModelInstance::set_rotation(Vec3d)` and
+      `ModelInstance::set_scaling_factor(Vec3d)`. The same transform
+      is copied onto every stacked instance so they're identical
+      regardless of which one the GUI picks as canonical. Per-instance
+      is the cleaner choice because libslic3r's `ModelObject::rotate`
+      and `ModelObject::scale` are destructive (they alter the mesh)
+      and have no Vec3d "set" form.
+- [x] Off-bed guard: when an explicit transform is supplied, the
+      post-scale world-space AABB is checked against the target
+      plate's bed (X/Y). Failure throws `PlacementFailure` (a dedicated
+      exception type in `project_ops.hpp`); the command callback maps
+      it to `ExitCode::placement_failure` (exit 9) and prints the
+      offending local offset in the message. The catch order in
+      `do_object_add` places `PlacementFailure` before
+      `std::out_of_range` so off-bed is not misreported as
+      `unknown_reference`.
+- [x] P4 e2e: 7 new tests in `tests/cli/e2e/test_object.cpp`
+      cover single-instance translate, `--count N` stacking,
+      grid-fallback when no transform, off-bed exit-9, per-axis scale,
+      Z-axis rotation, and bad `--translate` -> usage_error. All
+      `[orca-cli][P3]` tests still pass (regression check).
+- [ ] Manual GUI smoke: open the P4 manual-test output in OrcaSlicer
+      and verify 3 cubes on plate T -- `plain` at (60,60), `big`
+      (--scale 2) at (120,60), `spun` (--rotate 0,0,0.7854) at
+      (90,120) -- all visible and slicing cleanly. (Pending separate
+      manual verification per `docs/cli/manual-test.md` -> Phase 4.)

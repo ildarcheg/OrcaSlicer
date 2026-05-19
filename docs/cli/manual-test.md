@@ -113,3 +113,34 @@ Anti-cases (each should exit non-zero with a clean message):
 & $CLI object remove $OUT --name ghost-does-not-exist
 # expected: exit 6 (unknown_reference)
 ```
+
+## Phase 4 - object transforms
+
+```powershell
+$OUT = "$env:TEMP\orca-cli-p4.3mf"
+Copy-Item $REF $OUT -Force
+& $CLI plate  add $OUT --name T
+& $CLI object add $OUT --plate T --stl "$STLS\000_01_test_cube.stl" --translate 60,60 --name plain
+& $CLI object add $OUT --plate T --stl "$STLS\000_01_test_cube.stl" --translate 120,60 --scale 2 --name big
+& $CLI object add $OUT --plate T --stl "$STLS\000_01_test_cube.stl" --translate 90,120 --rotate 0,0,0.7854 --name spun
+```
+
+Expected: 3 cubes on plate T at the specified plate-local positions --
+`plain` at (60,60), `big` (twice the size, --scale 2) at (120,60), `spun`
+(rotated 45 deg about Z, pi/4 radians) at (90,120). All visible in
+OrcaSlicer's renderer. When any transform flag is supplied, `--count N`
+stacks N copies at the same post-transform position instead of laying
+them out on the per-plate grid (the P3 behavior).
+
+Anti-cases (each should exit non-zero with a clean message):
+
+```powershell
+& $CLI object add $OUT --plate T --stl "$STLS\000_01_test_cube.stl" --translate 99999,99999
+# expected: exit 9 (placement_failure)
+
+& $CLI object add $OUT --plate T --stl "$STLS\000_01_test_cube.stl" --translate "not,a,number"
+# expected: exit 1 (usage_error)
+
+& $CLI object add $OUT --plate T --stl "$STLS\000_01_test_cube.stl" --rotate 0,0
+# expected: exit 1 (usage_error - --rotate requires 3 components)
+```
