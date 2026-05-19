@@ -73,4 +73,35 @@ void remove_plate(ProjectState& s, const std::string& name);
 //   throws std::out_of_range     if no plate with name == `from` exists.
 void rename_plate(ProjectState& s, const std::string& from, const std::string& to);
 
+// --------------------------------------------------------------------------
+// Object mutations (P3).
+
+// Parameters for add_object. Translate / rotate / scale and --filament are
+// reserved for P4 / P5 and intentionally not present here yet.
+struct AddObjectParams {
+    std::string plate_name;     // target plate (must already exist)
+    std::string stl_path;       // path to the STL on disk; also stamped as source
+    std::string object_name;    // optional; defaults to STL basename
+    int         count = 1;      // number of instances on the target plate
+};
+
+// add_object: load `p.stl_path` as a fresh ModelObject, append it to the
+// project's model, stamp ModelVolume::source with the STL path + a
+// well-defined object/volume index pair (Bug C defense -- some Orca/Bambu
+// GUIs silently drop objects whose volumes lack a source.input_file), and
+// place `p.count` instances on the named plate via the deterministic grid
+// math in placement.hpp.
+//
+//   throws std::out_of_range  if `p.plate_name` is not an existing plate.
+//   throws std::runtime_error if the STL cannot be loaded.
+void add_object(ProjectState& s, const AddObjectParams& p);
+
+// remove_object: remove the first ModelObject whose name matches and rebuild
+// every plate's objects_and_instances map so that
+//   - entries pointing at the removed object are dropped, and
+//   - object indices greater than the removed index are shifted down by 1.
+//
+//   throws std::out_of_range if no object with that name exists.
+void remove_object(ProjectState& s, const std::string& object_name);
+
 } // namespace orca_cli
