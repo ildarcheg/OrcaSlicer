@@ -10,6 +10,7 @@ add_library(orca_cli_core STATIC
     output.cpp
     io.cpp
     project_ops.cpp
+    invariants.cpp
     nanosvg_impl.cpp
 )
 
