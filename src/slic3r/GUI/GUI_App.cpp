@@ -4876,7 +4876,6 @@ void GUI_App::on_http_error(wxCommandEvent &evt)
                     ->push_notification(NotificationType::PlaterError, NotificationManager::NotificationLevel::WarningNotificationLevel,
                                         msg.ToUTF8().data());
             }
-            return;
         }
 
         if (!m_is_error_shown) {
