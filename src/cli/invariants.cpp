@@ -169,12 +169,45 @@ void verify_vector_config_roundtrip(const ProjectState& in_memory,
 {
     using namespace Slic3r;
 
-    // Re-parse the just-written archive into a fresh ProjectState so we can
+    // Re-read only the config section of the just-written archive so we can
     // compare every vector-typed project_config option against what was in
     // RAM before the save. A mismatch means save_bbs_3mf lost or mutated
     // information for that key on disk; that's the bug pattern we are
     // guarding against.
-    const ProjectState loaded = load_project(zip_path);
+    //
+    // Use LoadStrategy::LoadConfig (skipping LoadModel) to avoid deserialising
+    // mesh geometry, which is the dominant cost on every save path and
+    // completely unnecessary for a config-key diff.
+    DynamicPrintConfig roundtripped_config;
+    {
+        Model               dummy_model;
+        PlateDataPtrs       plate_data;
+        std::vector<Preset*> project_presets;
+        bool   is_bbl_3mf  = false;
+        bool   is_orca_3mf = false;
+        Semver file_version;
+        ConfigSubstitutionContext substitutions{
+            ForwardCompatibilitySubstitutionRule::Disable};
+
+        const bool ok = load_bbs_3mf(
+            zip_path.c_str(),
+            &roundtripped_config,
+            &substitutions,
+            &dummy_model,
+            &plate_data,
+            &project_presets,
+            &is_bbl_3mf,
+            &is_orca_3mf,
+            &file_version,
+            /*proFn*/ nullptr,
+            LoadStrategy::LoadConfig);
+
+        release_PlateData_list(plate_data);
+
+        if (!ok)
+            throw InvariantViolation(
+                "invariant: failed to re-read project config from " + zip_path);
+    }
 
     for (const auto& kv : print_config_def.options) {
         const std::string&     key = kv.first;
@@ -182,7 +215,7 @@ void verify_vector_config_roundtrip(const ProjectState& in_memory,
         if (!is_vector_type(def.type)) continue;
 
         const ConfigOption* a = in_memory.project_config->option(key);
-        const ConfigOption* b = loaded   .project_config->option(key);
+        const ConfigOption* b = roundtripped_config.option(key);
 
         // Both sides absent -> nothing to compare. Common case: project did
         // not set this option at all.
