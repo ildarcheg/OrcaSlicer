@@ -219,9 +219,11 @@ Updated by each phase.
       (unknown_reference). The `BadConfigError` catch sits BEFORE
       the generic `std::exception` fallback so a typo on the key name
       doesn't get bucketed as `parse_failure`.
-- [x] JSON `list` output uses `escape_json` for both key and value
-      so a config value containing quotes / backslashes / control
-      characters can't break the surrounding `keys` array object.
+- [x] JSON `list` output is built via `nlohmann::json` so all
+      user-controlled strings (keys and values) are escaped
+      automatically; a config value containing quotes / backslashes /
+      control characters can't break the surrounding `keys` array
+      object.
 - [x] e2e: 12 new tests in `tests/cli/e2e/test_config.cpp` cover
       project-level set, per-object set, unknown key (exit 4), bad
       value (exit 4), unknown object (exit 6), unset, unknown-key
@@ -257,9 +259,9 @@ Updated by each phase.
       `project_changed: [...]`,
       `objects: [{name, config_keys: [...]}, ...]`. Every
       user-controlled string (plate names, object names, key names)
-      goes through `escape_json` so a value containing quotes /
-      backslashes / control characters can't break the surrounding
-      JSON.
+      is escaped automatically by `nlohmann::json` so a value
+      containing quotes / backslashes / control characters can't
+      break the surrounding JSON.
 - [x] e2e: 5 new tests in `tests/cli/e2e/test_inspect.cpp` cover the
       human-mode happy path on the reference 3mf, the JSON-mode
       structured output, `--output` rejection (exit 1), missing-file
@@ -290,3 +292,71 @@ has an automated e2e suite locking in the corresponding behavior and
 the cumulative P7 recipe exercises the full surface area in a single
 flow.
 
+## Cleanup pass (2026-05-19)
+
+HIGH + MEDIUM findings from a post-v2 review of `src/cli/**`, addressed in 15
+incremental commits on `main`:
+
+- T1 / M3 — `check_input_exists` centralized in `io.hpp`/`io.cpp`; four
+  subcommand TUs no longer carry their own copies with drifting error
+  messages ("input not found" is now the uniform wording).
+- T2 / M9 — `find_object` and `find_object_or_throw` (const + non-const)
+  promoted to `project_ops.hpp`; five inline lookup loops eliminated.
+- T3 / M10 — `filament_slot_count` promoted from `inspect.cpp` into
+  `project_ops`; the older anonymous `filament_count_of` renamed and
+  unified with it.
+- T4 / M7 — `plate_thumbnail_paths(int)` helper returns the five canonical
+  `Metadata/plate_*` PNG names; hardcoded literals across `io.cpp` and
+  `invariants.cpp` consolidated.
+- T5 / H4 — `read_printable_area_aabb` replaced the hand-rolled min/max
+  loop with libslic3r's `BoundingBoxf(const std::vector<Vec2d>&)` ctor.
+- T6 / M5 — `parse_vec3` extracted to `commands/object_parse_vec3.{hpp,cpp}`
+  and now returns `ParsedVec3 { values, component_count }`; the `--rotate`
+  and `--scale` arity checks moved into the parser instead of the caller
+  re-counting commas.
+- T7 / M4 — `do_object_add`'s 10-parameter signature replaced by an
+  `AddObjectRawOpts` struct constructed once by the CLI11 callback.
+- T8 / H1 — `MutationExceptionMap` + `run_mutation` (new
+  `commands/mutation_runner.hpp`) unify the load -> mutate -> save -> map
+  exception -> print_ok envelope; every mutating subcommand (`plate
+  {add,remove,rename}`, `object {add,remove,set-filament}`, `config
+  {set,unset}`) routes through it. Exit-code drift fixed at the source.
+- T9 / M1 — All CLI JSON output (`print_ok`, `print_err`, list / inspect
+  responses) built via `nlohmann::json`; the hand-rolled `escape_json`
+  deleted. E2E tests converted from substring-grep to
+  `nlohmann::json::parse` + field assertions.
+- T10 / M2 — `emit_list_response<Row, ToJson, ToLine>` template in
+  `output.hpp` unifies the human-vs-JSON branching of `do_*_list`. The
+  three list subcommands now build a `vector<Row>` and call the helper.
+- T11 / M11 — `save_project` adopts the safer rename-to-`.bak` /
+  rename-in / remove-`.bak` swap pattern, matching what
+  `atomic_swap_rewrite` already did. The destination is never absent.
+- T12 / M8 — `enumerate_zip_entry_names` and `extract_entry_to_memory`
+  replace `unzip_to_memory` for invariant checks that only need entry
+  names or a single `.rels` file. Peak memory on `run_all_invariants`
+  drops by the size of the mesh blobs.
+- T13 / M6 — `passthrough_missing_thumbnails` (215 lines, five phases)
+  decomposed into `enumerate_target_entries`,
+  `plan_thumbnail_passthrough`, `rewrite_archive_with_blobs`, and
+  `atomic_swap_rewrite`. Each helper owns its `mz_zip_archive` lifetime.
+- T14 / H3 — `rewrite_archive_with_blobs` carries forward entries via
+  `mz_zip_writer_add_from_zip_reader` (raw deflated bytes, no
+  decompress + recompress). Synthesized placeholder PNGs and source-
+  copied blobs both use `MZ_NO_COMPRESSION` (PNG is already deflate-
+  compressed). A fallback decompress+recompress path handles the rare
+  miniz failure.
+- T15 / H2 — `verify_vector_config_roundtrip` switches from
+  `load_project(zip)` (LoadModel + LoadConfig — the most expensive
+  operation in the pipeline) to a `load_bbs_3mf(..., LoadStrategy::
+  LoadConfig)` config-only call. Mesh data is no longer re-parsed
+  purely to diff vector-config keys.
+
+Test count moved from 109 / 66046 (P7 baseline) to 123 / 66046+ assertions.
+All e2e tests still pass; behavior of the CLI is unchanged except for the
+following deliberate small differences:
+
+- `inspect.cpp`'s missing-file error message is now uniform with the other
+  subcommands ("input not found" instead of "file not found").
+- JSON output key order may differ slightly (the `nlohmann::json` library
+  preserves insertion order; the previous hand-rolled output had a fixed
+  order). Field names and values are unchanged.
