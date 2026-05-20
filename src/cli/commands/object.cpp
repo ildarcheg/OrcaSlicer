@@ -216,6 +216,8 @@ void register_object_subcmd(CLI::App& app, GlobalOpts& g)
     // P5: state for `object set-filament`.
     static std::string sf_file, sf_name;
     static int         sf_slot = 0;
+    // Phase 8: state for `object split-to-parts`.
+    static std::string split_file, split_name;
 
     // -- object add --------------------------------------------------------
     auto* add = obj->add_subcommand("add", "add an STL to a plate");
@@ -284,6 +286,31 @@ void register_object_subcmd(CLI::App& app, GlobalOpts& g)
                      "write result to this path instead of overwriting input");
     setf->callback([&g]() {
         std::exit(do_object_set_filament(g, sf_file, sf_name, sf_slot));
+    });
+
+    // -- object split-to-parts (Phase 8) ----------------------------------
+    // Decompose the named object's single mesh into multiple ModelVolumes,
+    // one per connected component. The object keeps its name, plate
+    // assignment, and instance count.
+    //
+    // Exception mapping:
+    //   std::out_of_range     (unknown object)   -> ExitCode::unknown_reference
+    //   std::invalid_argument (wrong # volumes,
+    //                          not MODEL_PART,
+    //                          or only 1 component) -> ExitCode::invalid_state
+    auto* split = obj->add_subcommand("split-to-parts",
+        "decompose an object's single mesh into multiple parts (one per connected component)");
+    split->add_option("file", split_file, "input .3mf path")->required();
+    split->add_option("--name", split_name, "name of the object to split")->required();
+    split->add_option("--output", g.output,
+        "write result to this path instead of overwriting input");
+    split->callback([&g]() {
+        MutationExceptionMap em;
+        em.set_default_invalid_argument(ExitCode::invalid_state)
+          .set_default_out_of_range(ExitCode::unknown_reference);
+        std::exit(run_mutation(g, split_file,
+            "split object '" + split_name + "' into parts", em,
+            [](ProjectState& s) { split_object_to_parts(s, split_name); }));
     });
 
     // -- object list -------------------------------------------------------
