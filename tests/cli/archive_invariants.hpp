@@ -40,6 +40,17 @@ void assert_object_extruder(const fs::path&    zip,
                             const std::string& object_name,
                             int                expected_extruder);
 
+// In Metadata/model_settings.config: the <part ...> child of the <object>
+// matching `object_name` whose <metadata key="name" value="..."/> matches
+// `part_name` must carry a <metadata key="extruder" value="N"/> equal to
+// `expected_extruder`. Bug C class lock-in for per-volume filament
+// assignment: catches regressions where set-filament --part is silently
+// ignored by the serializer.
+void assert_part_extruder(const fs::path&    zip,
+                          const std::string& object_name,
+                          const std::string& part_name,
+                          int                expected_extruder);
+
 // Run the small set of "every e2e archive must pass these" checks. Right
 // now: relationships + 128px thumbnails. printable_area is also a
 // well-formed-archive check but lives outside this helper because it is

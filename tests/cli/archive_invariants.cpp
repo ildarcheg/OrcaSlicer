@@ -253,6 +253,73 @@ void assert_object_extruder(const fs::path&    zip,
     REQUIRE(actual_extruder == expected_extruder);
 }
 
+void assert_part_extruder(const fs::path&    zip,
+                          const std::string& object_name,
+                          const std::string& part_name,
+                          int                expected_extruder)
+{
+    auto entries = unzip_into_memory(zip);
+    const ZipEntry* cfg = find_entry(entries, "Metadata/model_settings.config");
+    INFO("missing Metadata/model_settings.config in " << zip.string());
+    REQUIRE(cfg != nullptr);
+
+    const std::string xml = bytes_as_string(cfg->bytes);
+
+    // Walk every <object ...> ... </object> block, find the one whose name
+    // metadata matches object_name, then within it find the <part> whose name
+    // metadata matches part_name, and assert its extruder metadata.
+    static const std::regex object_block_re(
+        R"(<object\b[^>]*>([\s\S]*?)</object>)");
+    static const std::regex part_block_re(
+        R"(<part\b[^>]*>([\s\S]*?)</part>)");
+    static const std::regex name_re(
+        R"(<metadata\s+key=\"name\"\s+value=\"([^\"]+)\")");
+    static const std::regex extruder_re(
+        R"(<metadata\s+key=\"extruder\"\s+value=\"([^\"]+)\")");
+
+    bool matched_object = false;
+    bool matched_part   = false;
+    int  actual_extruder = -1;
+
+    for (auto oit = std::sregex_iterator(xml.begin(), xml.end(), object_block_re);
+         oit != std::sregex_iterator{};
+         ++oit)
+    {
+        const std::string obj_body = (*oit)[1].str();
+        std::smatch onm;
+        if (!std::regex_search(obj_body, onm, name_re)) continue;
+        if (onm[1].str() != object_name)                continue;
+        matched_object = true;
+
+        // Found the right object — now find the part by name inside it.
+        for (auto pit = std::sregex_iterator(obj_body.begin(), obj_body.end(), part_block_re);
+             pit != std::sregex_iterator{};
+             ++pit)
+        {
+            const std::string part_body = (*pit)[1].str();
+            std::smatch pnm;
+            if (!std::regex_search(part_body, pnm, name_re)) continue;
+            if (pnm[1].str() != part_name)                   continue;
+            matched_part = true;
+
+            std::smatch em;
+            REQUIRE(std::regex_search(part_body, em, extruder_re));
+            actual_extruder = std::stoi(em[1].str());
+            break;
+        }
+        break;
+    }
+
+    INFO("object_name=" << object_name);
+    REQUIRE(matched_object);
+    INFO("part_name=" << part_name);
+    REQUIRE(matched_part);
+    INFO("part=" << part_name
+         << " expected_extruder=" << expected_extruder
+         << " actual_extruder="   << actual_extruder);
+    REQUIRE(actual_extruder == expected_extruder);
+}
+
 void run_all_basic(const fs::path& zip)
 {
     assert_relationships_resolve(zip);
