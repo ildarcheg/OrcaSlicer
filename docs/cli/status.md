@@ -440,7 +440,7 @@ contract against OrcaSlicer's constant. Test count moved from 123 to
   hand-authored case (unit test #13).
 - [x] All P0-P8 tests still pass (regression). Merge adds 32 new tests
   (19 unit + 12 e2e + 1 roundtrip).
-- [ ] Manual GUI smoke: open the P9 manual-test output in OrcaSlicer and
-  verify the merged object renders as one ModelVolume per part vector
-  entry, with the merged part carrying the assigned filament. (Pending
-  separate manual verification.)
+- [x] Manual GUI smoke: P9 manual-test output opened in OrcaSlicer
+  (2026-05-20). Merged `multipart_combo` appears in `multipart_1`'s
+  slot with filament 1; remaining parts unchanged; geometry matches
+  the pre-merge silhouette (no `modify_to_center_geometry` shift).
