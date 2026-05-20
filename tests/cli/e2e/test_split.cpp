@@ -324,3 +324,43 @@ TEST_CASE("object split-to-parts --output writes only the side-car file",
 
     fs::remove_all(tmp);
 }
+
+TEST_CASE("end-to-end split + per-part filament on Layer B realistic mesh",
+          "[orca-cli][split][e2e]") {
+    using namespace orca_cli_test::archive;
+    const auto stl = fs::path(ORCA_CLI_STL_DIR) / "box_with_text.stl";
+    if (!fs::exists(stl)) {
+        SKIP("box_with_text.stl not present at " << stl.string());
+    }
+    if (ref_3mf().empty()) { SUCCEED("Skipped: reference 3mf not available"); return; }
+
+    const auto tmp = make_temp_dir();
+    const auto out = tmp / "split_e2e_b.3mf";
+    fs::copy_file(ref_3mf(), out);
+
+    auto add_plate_rc = run_cli({"plate", "add", out.string(), "--name", "SplitPlate"});
+    INFO("plate add stdout: " << add_plate_rc.stdout_ << "\nstderr: " << add_plate_rc.stderr_);
+    REQUIRE(add_plate_rc.exit_code == 0);
+
+    auto add_rc = run_cli({"object", "add", out.string(),
+        "--plate", "SplitPlate", "--stl", stl.string(), "--name", "realistic"});
+    INFO("object add stdout: " << add_rc.stdout_ << "\nstderr: " << add_rc.stderr_);
+    REQUIRE(add_rc.exit_code == 0);
+
+    auto split_rc = run_cli({"object", "split-to-parts", out.string(),
+        "--name", "realistic"});
+    INFO("split-to-parts stdout: " << split_rc.stdout_ << "\nstderr: " << split_rc.stderr_);
+    REQUIRE(split_rc.exit_code == 0);
+
+    // We don't know exactly how many parts came out; assign filament 2 to
+    // realistic_1 only and verify it lands in the archive.
+    auto sf_rc = run_cli({"object", "set-filament", out.string(),
+        "--name", "realistic", "--part", "realistic_1", "--filament", "2"});
+    INFO("set-filament stdout: " << sf_rc.stdout_ << "\nstderr: " << sf_rc.stderr_);
+    REQUIRE(sf_rc.exit_code == 0);
+
+    assert_parts_have_source_file(out);
+    assert_part_extruder(out, "realistic", "realistic_1", 2);
+
+    fs::remove_all(tmp);
+}
