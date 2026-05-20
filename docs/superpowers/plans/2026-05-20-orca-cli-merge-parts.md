@@ -290,11 +290,10 @@ void merge_object_parts(ProjectState& s,
     // sources. ModelObject::add_volume returns a freshly-allocated
     // ModelVolume; we use it for the merged data, then splice it into
     // the anchor slot and delete the original anchor.
-    ModelVolume* merged = obj.add_volume(merged_mesh);
+    ModelVolume* merged = obj.add_volume(merged_mesh, /*modify_to_center_geometry=*/false);
     merged->name = merged_part_name;
     merged->set_transformation(Geometry::Transformation());
     merged->source = anchor_source;
-    stamp_source_if_missing(*merged, anchor_source);
 
     // obj.add_volume pushed `merged` to the end of obj.volumes. Move it
     // to the anchor position, then erase the old anchor + the other

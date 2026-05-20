@@ -297,4 +297,51 @@ void split_object_to_parts(ProjectState& s, const std::string& object_name);
 void stamp_source_if_missing(Slic3r::ModelVolume&              vol,
                              const Slic3r::ModelVolume::Source& fallback);
 
+// DuplicateNameError: thrown by merge_object_parts when --into collides
+// with an existing volume name on the object that is NOT one of the
+// sources being consumed. Maps to ExitCode::duplicate_name (exit 5) via
+// MutationExceptionMap::on<DuplicateNameError>. Mirrors PlacementFailure
+// / BadConfigError as a typed std::runtime_error so the catch chain can
+// distinguish "duplicate name" (exit 5) from "invalid state" (exit 7).
+class DuplicateNameError : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
+
+// merge_object_parts: combine the named subset of ModelVolumes within
+// the named ModelObject into a single merged ModelVolume named
+// `merged_part_name`. Mesh combination is triangle concatenation
+// (TriangleMesh::merge) with each source's get_matrix() baked in before
+// concat; the merged volume's matrix is set to identity. The merged
+// volume is inserted at the position of the source with the LOWEST
+// existing index in obj.volumes (stability under --parts reordering);
+// the other sources are erased.
+//
+// Validation runs in the fixed precedence order from Section 3 of the
+// spec. First failing check wins; subsequent checks are not evaluated.
+//
+//   throws std::out_of_range     if `object_name` is not on the project;
+//                                if any name in `source_part_names` is
+//                                not a volume on the object; or if
+//                                filament_override is not in
+//                                [1..filament_slot_count].
+//   throws DuplicateNameError    if `merged_part_name` collides with an
+//                                existing volume on the object that is
+//                                NOT in `source_part_names`.
+//   throws std::invalid_argument if any source volume is not MODEL_PART;
+//                                if all source meshes are empty;
+//                                if fewer than 2 non-empty sources
+//                                remain after dropping empties;
+//                                if non-empty sources have differing
+//                                effective extruders AND
+//                                filament_override is std::nullopt;
+//                                or if non-empty sources have a
+//                                per-volume non-extruder config key
+//                                whose values diverge (strict rule).
+void merge_object_parts(ProjectState& s,
+                        const std::string&              object_name,
+                        const std::vector<std::string>& source_part_names,
+                        const std::string&              merged_part_name,
+                        std::optional<int>              filament_override);
+
 } // namespace orca_cli

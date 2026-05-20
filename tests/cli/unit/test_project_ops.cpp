@@ -807,3 +807,30 @@ TEST_CASE("set_object_filament with unknown part_name throws out_of_range",
                             std::optional<std::string>("__nope__")),
         std::out_of_range);
 }
+
+TEST_CASE("merge_object_parts on Layer A two-source merge produces 1 volume "
+          "from 2",
+          "[orca-cli][merge][unit]") {
+    namespace fs = boost::filesystem;
+    using namespace orca_cli;
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped: no reference 3mf"); return; }
+    auto s = load_project(orca_cli_test::ref_3mf().string());
+    AddObjectParams p;
+    p.plate_name  = s.plates.front()->plate_name;
+    p.stl_path    = (fs::path(ORCA_CLI_FIXTURES_DIR) / "two_cubes.stl").string();
+    p.object_name = "merge_happy";
+    p.count       = 1;
+    REQUIRE_NOTHROW(add_object(s, p));
+    REQUIRE_NOTHROW(split_object_to_parts(s, "merge_happy"));
+    auto* obj = find_object(s, "merge_happy");
+    REQUIRE(obj != nullptr);
+    REQUIRE(obj->volumes.size() == 2);
+
+    REQUIRE_NOTHROW(merge_object_parts(s, "merge_happy",
+        {"merge_happy_1", "merge_happy_2"}, "merge_main", std::nullopt));
+
+    auto* obj2 = find_object(s, "merge_happy");
+    REQUIRE(obj2 != nullptr);
+    REQUIRE(obj2->volumes.size() == 1);
+    REQUIRE(obj2->volumes[0]->name == std::string("merge_main"));
+}

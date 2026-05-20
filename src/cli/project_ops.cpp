@@ -665,4 +665,106 @@ void split_object_to_parts(ProjectState& s, const std::string& object_name) {
     }
 }
 
+void merge_object_parts(ProjectState& s,
+                        const std::string&              object_name,
+                        const std::vector<std::string>& source_part_names,
+                        const std::string&              merged_part_name,
+                        std::optional<int>              filament_override)
+{
+    using namespace Slic3r;
+
+    // Section 3 precedence step 1 (parse-level usage_error cases 1-4) is
+    // enforced at the CLI layer before this helper runs; here we trust
+    // source_part_names.size() >= 2, no duplicates, merged_part_name
+    // non-empty. The unit tests assert each precedence step in order.
+
+    // Section 3 precedence step 2: locate object + sources.
+    ModelObject& obj = find_object_or_throw(s, object_name);
+
+    // Map source names to their indices in obj.volumes. Preserves the
+    // user's --parts order via the indices vector, but the placement
+    // algorithm uses lowest-existing-index regardless of argument order.
+    std::vector<size_t> source_indices;
+    source_indices.reserve(source_part_names.size());
+    for (const auto& name : source_part_names) {
+        size_t found = obj.volumes.size();
+        for (size_t i = 0; i < obj.volumes.size(); ++i) {
+            if (obj.volumes[i]->name == name) { found = i; break; }
+        }
+        if (found == obj.volumes.size()) {
+            throw std::out_of_range(
+                "source part not found on object '" + object_name +
+                "': '" + name + "'");
+        }
+        source_indices.push_back(found);
+    }
+
+    // Bake-in transform + concat. Lowest-existing-index = min element.
+    const size_t anchor_idx =
+        *std::min_element(source_indices.begin(), source_indices.end());
+
+    TriangleMesh merged_mesh;
+    for (size_t idx : source_indices) {
+        ModelVolume* v = obj.volumes[idx];
+        if (v->mesh().empty()) continue;
+        TriangleMesh m(v->mesh());
+        m.transform(v->get_matrix(), /*fix_left_handed=*/true);
+        merged_mesh.merge(m);
+    }
+
+    // Capture source attribution from the lowest-existing-index source
+    // BEFORE we erase any volumes. Used to stamp the merged volume so
+    // Bug C defense is preserved.
+    const ModelVolume::Source anchor_source = obj.volumes[anchor_idx]->source;
+
+    // Build the merged ModelVolume in place at the anchor position by
+    // mutating obj.volumes[anchor_idx] and then erasing the OTHER
+    // sources. ModelObject::add_volume returns a freshly-allocated
+    // ModelVolume; we use it for the merged data, then splice it into
+    // the anchor slot and delete the original anchor.
+    ModelVolume* merged = obj.add_volume(merged_mesh, /*modify_to_center_geometry=*/false);
+    merged->name = merged_part_name;
+    merged->set_transformation(Geometry::Transformation());
+    merged->source = anchor_source;
+
+    // obj.add_volume pushed `merged` to the end of obj.volumes. Move it
+    // to the anchor position, then erase the old anchor + the other
+    // sources. Build the set of indices to erase (everything in
+    // source_indices), then walk obj.volumes building the new vector
+    // with `merged` inserted at the anchor slot.
+    std::vector<ModelVolume*> rebuilt;
+    rebuilt.reserve(obj.volumes.size() - source_indices.size());
+    std::vector<bool> drop(obj.volumes.size(), false);
+    for (size_t idx : source_indices) drop[idx] = true;
+    // The freshly-added merged volume is at the end (last index) and is
+    // NOT in source_indices, so drop[obj.volumes.size() - 1] == false.
+    const size_t merged_pos_in_volumes = obj.volumes.size() - 1;
+    drop[merged_pos_in_volumes] = true; // we'll re-insert at anchor
+
+    for (size_t i = 0; i < obj.volumes.size(); ++i) {
+        if (i == anchor_idx) {
+            rebuilt.push_back(merged);
+        } else if (!drop[i]) {
+            rebuilt.push_back(obj.volumes[i]);
+        }
+        // else: source that is not the anchor, or the freshly-added
+        // merged volume at the end -- both skipped here.
+    }
+
+    // Delete the original anchor + non-anchor sources whose pointers
+    // are about to be orphaned (everything in source_indices except the
+    // anchor's slot, plus the original anchor itself). The merged
+    // volume's pointer is preserved in `rebuilt`.
+    for (size_t idx : source_indices) {
+        delete obj.volumes[idx];
+    }
+    obj.volumes.swap(rebuilt);
+    obj.invalidate_bounding_box();
+
+    // filament_override handling is added in Task 7. For now, the
+    // merged volume inherits whatever extruder libslic3r assigned by
+    // default. The happy-path test does not assert filament.
+    (void)filament_override;
+}
+
 } // namespace orca_cli
