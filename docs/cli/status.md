@@ -237,3 +237,56 @@ Updated by each phase.
       settings panel and the global process-settings panel shows
       `sparse_infill_density = 30%`. (Pending separate manual
       verification per `docs/cli/manual-test.md` -> Phase 6.)
+
+## Phase 7 - docs finalize + `inspect`
+
+- [x] New read-only `orca-cli inspect <file>` subcommand in
+      `commands/inspect.cpp`, wired into `main.cpp` and the
+      `orca_cli_core` CMake target. Reports plate count, per-plate
+      object names, filament slot count, project-level changed config
+      keys (via `changed_project_keys` -- the same G6-safe path P6
+      added for `config list --changed-only`), and the explicitly-set
+      per-object config keys for every `ModelObject` in the loaded
+      project. Read-only: rejects `--output` with `usage_error`
+      (exit 1) the same way `plate list` / `object list` /
+      `config list` do.
+- [x] Human-mode output: one line per fact, indented to surface the
+      per-plate / per-object grouping. JSON-mode output: a structured
+      `data` object with `plate_count`, `filament_count`,
+      `plates: [{index,name,objects:[...]}, ...]`,
+      `project_changed: [...]`,
+      `objects: [{name, config_keys: [...]}, ...]`. Every
+      user-controlled string (plate names, object names, key names)
+      goes through `escape_json` so a value containing quotes /
+      backslashes / control characters can't break the surrounding
+      JSON.
+- [x] e2e: 5 new tests in `tests/cli/e2e/test_inspect.cpp` cover the
+      human-mode happy path on the reference 3mf, the JSON-mode
+      structured output, `--output` rejection (exit 1), missing-file
+      (exit 2), and a mutation round-trip (plate add + object add +
+      config set followed by `--json inspect` containing the new
+      plate / object / config key).
+- [x] Cumulative manual-test recipe appended to
+      `docs/cli/manual-test.md` -- exercises the full P0..P7 chain
+      (init -> plate add/rename -> object add with transforms +
+      filaments -> config set both scopes -> inspect) in a single
+      block.
+- [x] `README.md` updated with a brief "orca-cli (experimental
+      command-line composer)" section pointing at
+      `docs/cli/manual-test.md` and `docs/cli/status.md`.
+- [x] All P0-P6 tests still pass (regression check). Test count moved
+      from 104 cases / 66028 assertions (P6 baseline) to 109 cases /
+      66046 assertions.
+- [ ] Manual GUI smoke: open the P7 manual-test output in OrcaSlicer
+      and verify all four plates render with the documented object
+      counts, the per-object and project-level config overrides
+      surface in the GUI, and `inspect` matches the GUI's view of
+      the file. (Pending separate manual verification per
+      `docs/cli/manual-test.md` -> Phase 7.)
+
+Status: P0-P7 implementation complete. Phase-by-phase manual GUI
+smokes remain pending (the unchecked items above), but every phase
+has an automated e2e suite locking in the corresponding behavior and
+the cumulative P7 recipe exercises the full surface area in a single
+flow.
+

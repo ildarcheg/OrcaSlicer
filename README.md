@@ -66,6 +66,10 @@ If you come across any of these in search results, please <b>report them</b> as 
   Supports a broad range of printers: Bambu Lab, Prusa, Creality, Voron, and more.
 - Additional features can be found in the [change notes](https://github.com/OrcaSlicer/OrcaSlicer/releases/).
 
+# orca-cli (experimental command-line composer)
+
+`orca-cli` is an experimental, non-shipping companion binary that composes `.3mf` projects from a reference template plus STLs, transforms, filament-slot assignments, and per-object / project-level config overrides. It is useful for batch-generating prints from scripts without driving the GUI. See [`docs/cli/manual-test.md`](docs/cli/manual-test.md) for the end-to-end recipe and [`docs/cli/status.md`](docs/cli/status.md) for current implementation status.
+
 # Wiki
 
 The [wiki](https://www.orcaslicer.com/wiki) aims to provide a detailed explanation of the slicer settings, including how to maximize their use and how to calibrate and set up your printer.

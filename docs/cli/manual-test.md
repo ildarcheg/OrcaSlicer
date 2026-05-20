@@ -217,3 +217,63 @@ Anti-cases (each should exit non-zero with a clean message):
 & $CLI config list  $OUT --output anywhere.3mf
 # expected: exit 1 (usage_error - --output not allowed on list)
 ```
+
+## Phase 7 - `inspect` + cumulative happy-path recipe
+
+Read-only diagnostic dump. Combines every prior phase into a single
+end-to-end exercise: clone the reference, add plates, add objects with
+transforms and filaments, override project + per-object config, then
+verify the result with `inspect`.
+
+```powershell
+$REF  = "C:\Users\ildarcheg\Documents\GitHub\slicer_tamplates\temp_project_for_orca_slicer.3mf"
+$STLS = "C:\Users\ildarcheg\Documents\GitHub\slicer_tamplates"
+$OUT  = "$env:TEMP\orca-cli-p7-full.3mf"
+$CLI  = "$pwd\build\src\cli\Release\orca-cli.exe"
+
+Remove-Item $OUT -Force -ErrorAction SilentlyContinue
+& $CLI project init $OUT --template $REF
+& $CLI plate add    $OUT --name "Brackets"
+& $CLI plate add    $OUT --name "Spares"
+& $CLI plate rename $OUT --from "Spares" --to "Storage"
+& $CLI object add   $OUT --plate "Brackets" --stl "$STLS\000_01_test_cylinder.stl" --name cyl  --filament 1
+& $CLI object add   $OUT --plate "Brackets" --stl "$STLS\000_01_test_cone.stl"     --count 3   --name cone --filament 2
+& $CLI object add   $OUT --plate "Storage"  --stl "$STLS\000_01_test_cube.stl"     --translate 60,60 --scale 2 --name big
+& $CLI config set   $OUT --object cyl --key wall_loops --value 4
+& $CLI config set   $OUT --key sparse_infill_density --value 30%
+& $CLI inspect      $OUT
+& $CLI --json inspect $OUT     # structured form; pipe through ConvertFrom-Json for browsing
+```
+
+Expected: in OrcaSlicer:
+
+- Plates 1, 2 come through from the reference; plates 3 (`Brackets`)
+  and 4 (`Storage`) are newly added.
+- `Brackets` has 1 `cyl` (filament slot 1, wall_loops = 4 per-object
+  override) plus 3 `cone` instances (filament slot 2).
+- `Storage` has 1 `big` cube, twice the size (--scale 2), translated
+  to plate-local (60,60).
+- Process panel shows `sparse_infill_density = 30%`.
+- Every object renders cleanly, no crash on load.
+
+Expected from `inspect`:
+
+- Human mode lists `plates: 4`, `filament slots: 6`, then per-plate
+  blocks naming the contained ModelObjects, then the project's
+  changed config keys (hundreds, including `sparse_infill_density`),
+  then per-object key lists (`cyl` carries `wall_loops`; `big`
+  carries `extruder` / `wall_loops` only if explicitly set).
+- JSON mode emits `{"plate_count":4, "filament_count":6,
+  "plates":[...], "project_changed":[...], "objects":[...]}` inside
+  the `data` object.
+
+Anti-cases (each should exit non-zero with a clean message):
+
+```powershell
+& $CLI inspect $OUT --output anywhere.3mf
+# expected: exit 1 (usage_error - --output not allowed on inspect)
+
+& $CLI inspect "C:\does\not\exist.3mf"
+# expected: exit 2 (file_not_found)
+```
+
