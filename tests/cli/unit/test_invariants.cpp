@@ -77,3 +77,21 @@ TEST_CASE("orca-cli: verify_vector_config_roundtrip passes on reference 3mf",
     orca_cli::save_project(state, out);
     REQUIRE_NOTHROW(orca_cli::verify_vector_config_roundtrip(state, out));
 }
+
+TEST_CASE("enumerate_zip_entry_names lists every non-directory entry",
+          "[orca-cli][cleanup][T12]") {
+    auto names = orca_cli::enumerate_zip_entry_names(ORCA_CLI_REF_3MF);
+    REQUIRE(names.size() > 0);
+    bool has_rels = false;
+    for (const auto& n : names) if (n == "_rels/.rels") { has_rels = true; break; }
+    REQUIRE(has_rels);
+}
+
+TEST_CASE("extract_entry_to_memory grabs just the rels bytes",
+          "[orca-cli][cleanup][T12]") {
+    auto bytes = orca_cli::extract_entry_to_memory(ORCA_CLI_REF_3MF, "_rels/.rels");
+    REQUIRE(bytes.has_value());
+    REQUIRE(bytes->size() > 50);
+    std::string content(bytes->begin(), bytes->end());
+    REQUIRE(content.find("<?xml") != std::string::npos);
+}

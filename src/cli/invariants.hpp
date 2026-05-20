@@ -1,5 +1,6 @@
 #pragma once
 #include "project_ops.hpp"
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -48,5 +49,16 @@ void verify_vector_config_roundtrip(const ProjectState& in_memory,
 // save_project before the atomic .tmp -> target rename.
 void run_all_invariants(const ProjectState& in_memory,
                         const std::string&  zip_path);
+
+// Lightweight central-directory enumeration: opens the zip, walks entry
+// names, closes. Does NOT decompress entry bodies. Returns empty vector
+// on open failure.
+std::vector<std::string> enumerate_zip_entry_names(const std::string& zip_path);
+
+// Extract a single entry by exact name. Returns nullopt if the entry is
+// missing or the archive cannot be opened. Slashes in entry names are
+// normalized to '/' (matching the rest of the CLI's zip handling).
+std::optional<std::vector<unsigned char>>
+extract_entry_to_memory(const std::string& zip_path, const std::string& entry_name);
 
 } // namespace orca_cli

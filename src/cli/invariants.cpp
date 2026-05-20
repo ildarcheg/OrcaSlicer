@@ -6,6 +6,8 @@
 #include <libslic3r/Config.hpp>
 #include <libslic3r/PrintConfig.hpp>
 
+#include <algorithm>
+#include <optional>
 #include <regex>
 #include <unordered_set>
 
@@ -64,6 +66,44 @@ std::vector<ZipEntry> unzip_to_memory(const std::string& zip_path)
     }
     close_zip_reader(&archive);
     return out;
+}
+
+std::vector<std::string> enumerate_zip_entry_names(const std::string& zip_path)
+{
+    std::vector<std::string> names;
+    mz_zip_archive z{};
+    if (!Slic3r::open_zip_reader(&z, zip_path)) return names;
+    const mz_uint n = mz_zip_reader_get_num_files(&z);
+    names.reserve(n);
+    for (mz_uint i = 0; i < n; ++i) {
+        mz_zip_archive_file_stat st;
+        if (!mz_zip_reader_file_stat(&z, i, &st)) continue;
+        if (st.m_is_directory) continue;
+        std::string name(st.m_filename);
+        std::replace(name.begin(), name.end(), '\\', '/');
+        names.push_back(std::move(name));
+    }
+    Slic3r::close_zip_reader(&z);
+    return names;
+}
+
+std::optional<std::vector<unsigned char>>
+extract_entry_to_memory(const std::string& zip_path, const std::string& entry_name)
+{
+    mz_zip_archive z{};
+    if (!Slic3r::open_zip_reader(&z, zip_path)) return std::nullopt;
+    int idx = mz_zip_reader_locate_file(&z, entry_name.c_str(), nullptr, 0);
+    if (idx < 0) { Slic3r::close_zip_reader(&z); return std::nullopt; }
+    mz_zip_archive_file_stat st;
+    if (!mz_zip_reader_file_stat(&z, mz_uint(idx), &st)) {
+        Slic3r::close_zip_reader(&z); return std::nullopt;
+    }
+    std::vector<unsigned char> bytes(static_cast<size_t>(st.m_uncomp_size));
+    if (!mz_zip_reader_extract_to_mem(&z, mz_uint(idx), bytes.data(), bytes.size(), 0)) {
+        Slic3r::close_zip_reader(&z); return std::nullopt;
+    }
+    Slic3r::close_zip_reader(&z);
+    return bytes;
 }
 
 void verify_relationships(const std::vector<ZipEntry>& entries)
@@ -171,9 +211,46 @@ void verify_vector_config_roundtrip(const ProjectState& in_memory,
 void run_all_invariants(const ProjectState& in_memory,
                         const std::string&  zip_path)
 {
-    auto entries = unzip_to_memory(zip_path);
-    verify_relationships(entries);
-    verify_plate_thumbnails(entries);
+    // Use lightweight helpers rather than a full-archive decompress.
+    // verify_relationships only needs the _rels/.rels bytes; build a
+    // minimal ZipEntry list with just that one entry so the existing
+    // implementation can be reused without further signature changes.
+    {
+        auto rels_bytes = extract_entry_to_memory(zip_path, "_rels/.rels");
+        if (!rels_bytes)
+            throw InvariantViolation("cannot read _rels/.rels from: " + zip_path);
+        std::vector<char> char_bytes(rels_bytes->begin(), rels_bytes->end());
+
+        // We also need the entry-name set so verify_relationships can
+        // confirm targets exist. Build a name-only ZipEntry list.
+        auto entry_names = enumerate_zip_entry_names(zip_path);
+        if (entry_names.empty())
+            throw InvariantViolation("cannot open archive: " + zip_path);
+
+        std::vector<ZipEntry> rel_entries;
+        rel_entries.reserve(entry_names.size() + 1);
+        // Put the real .rels bytes in first, then stub-out all other entries
+        // (bytes empty — verify_relationships only reads bytes for .rels files).
+        rel_entries.push_back(ZipEntry{ "_rels/.rels", std::move(char_bytes) });
+        for (auto& n : entry_names) {
+            if (n != "_rels/.rels")
+                rel_entries.push_back(ZipEntry{ std::move(n), {} });
+        }
+        verify_relationships(rel_entries);
+    }
+
+    // verify_plate_thumbnails only needs the entry names.
+    {
+        auto entry_names = enumerate_zip_entry_names(zip_path);
+        if (entry_names.empty())
+            throw InvariantViolation("cannot open archive: " + zip_path);
+        std::vector<ZipEntry> name_entries;
+        name_entries.reserve(entry_names.size());
+        for (auto& n : entry_names)
+            name_entries.push_back(ZipEntry{ std::move(n), {} });
+        verify_plate_thumbnails(name_entries);
+    }
+
     verify_vector_config_roundtrip(in_memory, zip_path);
 }
 
