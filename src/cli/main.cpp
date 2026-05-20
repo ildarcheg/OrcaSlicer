@@ -5,6 +5,7 @@
 #include "commands/plate.hpp"
 #include "commands/object.hpp"
 #include "commands/config.hpp"
+#include "commands/inspect.hpp"
 #include <cstdlib>
 #include <cstdio>
 
@@ -22,6 +23,7 @@ int main(int argc, char** argv)
     orca_cli::commands::register_plate_subcmd  (app, opts);
     orca_cli::commands::register_object_subcmd (app, opts);
     orca_cli::commands::register_config_subcmd (app, opts);
+    orca_cli::commands::register_inspect_subcmd(app, opts);
 
     try {
         app.parse(argc, argv);

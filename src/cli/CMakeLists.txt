@@ -18,6 +18,7 @@ add_library(orca_cli_core STATIC
     commands/plate.cpp
     commands/object.cpp
     commands/config.cpp
+    commands/inspect.cpp
 )
 
 target_include_directories(orca_cli_core PUBLIC
