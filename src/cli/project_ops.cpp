@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <stdexcept>
+#include <unordered_set>
 #include <utility>
 
 namespace orca_cli {
@@ -697,6 +698,25 @@ void merge_object_parts(ProjectState& s,
                 "': '" + name + "'");
         }
         source_indices.push_back(found);
+    }
+
+    // Section 3 precedence step 3: name collision (cases 8, 9).
+    // --into must not collide with an existing volume name UNLESS the
+    // colliding name is one of the sources being consumed (in which
+    // case the existing volume is erased and its name is reused).
+    {
+        std::unordered_set<std::string> source_names(
+            source_part_names.begin(), source_part_names.end());
+        if (source_names.count(merged_part_name) == 0) {
+            for (const ModelVolume* v : obj.volumes) {
+                if (v->name == merged_part_name) {
+                    throw DuplicateNameError(
+                        "merged part name '" + merged_part_name +
+                        "' collides with existing volume on object '" +
+                        object_name + "' (not one of the sources)");
+                }
+            }
+        }
     }
 
     // Bake-in transform + concat. Lowest-existing-index = min element.

@@ -866,3 +866,63 @@ TEST_CASE("merge_object_parts on unknown source name throws out_of_range "
             {"merge_unknown_src_1", "__nope__"}, "merged", std::nullopt),
         std::out_of_range);
 }
+
+TEST_CASE("merge_object_parts refuses --into collision with non-source "
+          "(case 8 -> DuplicateNameError)",
+          "[orca-cli][merge][unit]") {
+    namespace fs = boost::filesystem;
+    using namespace orca_cli;
+    using namespace Slic3r;
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped: no reference 3mf"); return; }
+    auto s = load_project(orca_cli_test::ref_3mf().string());
+    AddObjectParams p;
+    p.plate_name  = s.plates.front()->plate_name;
+    p.stl_path    = (fs::path(ORCA_CLI_FIXTURES_DIR) / "two_cubes.stl").string();
+    p.object_name = "merge_collide";
+    p.count       = 1;
+    REQUIRE_NOTHROW(add_object(s, p));
+    REQUIRE_NOTHROW(split_object_to_parts(s, "merge_collide"));
+
+    // Add a third volume by hand-construction so we have a non-source
+    // volume to collide with. Use an empty mesh to keep the test fast;
+    // the collision check runs BEFORE empty-mesh validation in the
+    // precedence chain (cases 12/13 come after case 8).
+    ModelObject* obj = find_object(s, "merge_collide");
+    REQUIRE(obj != nullptr);
+    TriangleMesh dummy;
+    ModelVolume* extra = obj->add_volume(dummy);
+    extra->name = "merge_collide_extra";
+
+    REQUIRE_THROWS_AS(
+        merge_object_parts(s, "merge_collide",
+            {"merge_collide_1", "merge_collide_2"},
+            "merge_collide_extra",  // collides with non-source name
+            std::nullopt),
+        DuplicateNameError);
+}
+
+TEST_CASE("merge_object_parts allows --into matching a source name "
+          "(case 9 -- source consumed, name reused)",
+          "[orca-cli][merge][unit]") {
+    namespace fs = boost::filesystem;
+    using namespace orca_cli;
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped: no reference 3mf"); return; }
+    auto s = load_project(orca_cli_test::ref_3mf().string());
+    AddObjectParams p;
+    p.plate_name  = s.plates.front()->plate_name;
+    p.stl_path    = (fs::path(ORCA_CLI_FIXTURES_DIR) / "two_cubes.stl").string();
+    p.object_name = "merge_reuse";
+    p.count       = 1;
+    REQUIRE_NOTHROW(add_object(s, p));
+    REQUIRE_NOTHROW(split_object_to_parts(s, "merge_reuse"));
+
+    REQUIRE_NOTHROW(merge_object_parts(s, "merge_reuse",
+        {"merge_reuse_1", "merge_reuse_2"},
+        "merge_reuse_1",  // matches a source name -- allowed
+        std::nullopt));
+
+    auto* obj = find_object(s, "merge_reuse");
+    REQUIRE(obj != nullptr);
+    REQUIRE(obj->volumes.size() == 1);
+    REQUIRE(obj->volumes[0]->name == std::string("merge_reuse_1"));
+}
