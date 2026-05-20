@@ -1,13 +1,21 @@
 cmake_minimum_required(VERSION 3.13)
 
+# Test-fixture locations. Defaults point in-tree under tests/cli/fixtures/
+# so a fresh clone builds + tests cleanly on any machine. Override via
+# -DORCA_CLI_REF_3MF=... / -DORCA_CLI_STL_DIR=... at configure time if
+# you want to point at out-of-tree fixtures (e.g. shared workstream dir).
 set(ORCA_CLI_REF_3MF
-    "C:/Users/ildarcheg/Documents/GitHub/slicer_tamplates/temp_project_for_orca_slicer.3mf"
+    "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/temp_project_for_orca_slicer.3mf"
     CACHE FILEPATH "Reference 3mf for orca-cli tests; tests SUCCEED+skip if missing")
 set(ORCA_CLI_STL_DIR
-    "C:/Users/ildarcheg/Documents/GitHub/slicer_tamplates"
+    "${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
     CACHE PATH "STL fixture directory for orca-cli tests")
 
-# Layer A fixture dir (committed in-tree, always present).
+# Layer A fixture dir (committed in-tree, always present). Used by the
+# generator + a small number of tests that load STLs by exact path
+# (vs. via ORCA_CLI_STL_DIR which is also in-tree now but conceptually
+# separate -- a future contributor could repoint STL_DIR to an external
+# corpus while leaving the Layer A fixtures stable).
 set(ORCA_CLI_FIXTURES_DIR "${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
     CACHE PATH "Committed in-tree fixture directory for orca-cli tests")
 
