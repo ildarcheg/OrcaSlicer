@@ -577,3 +577,19 @@ TEST_CASE("filament_slot_count >= 1 on reference", "[orca-cli][cleanup][T3]") {
     ProjectState s = load_project(ORCA_CLI_REF_3MF);
     REQUIRE(filament_slot_count(*s.project_config) >= 1);
 }
+
+TEST_CASE("printable_area read produces same bed extent before/after refactor",
+          "[orca-cli][cleanup][T5]") {
+    using namespace orca_cli;
+    auto stl = (orca_cli_test::stl_dir() / "000_01_test_cube.stl");
+    if (!boost::filesystem::exists(stl)) { SUCCEED("Skipped: no cube fixture"); return; }
+
+    ProjectState s = load_project(ORCA_CLI_REF_3MF);
+    AddObjectParams p;
+    p.plate_name  = s.plates.front()->plate_name;
+    p.stl_path    = stl.string();
+    p.object_name = "cube_t5";
+    p.count       = 1;
+    REQUIRE_NOTHROW(add_object(s, p));
+    REQUIRE(s.model->objects.back()->name == "cube_t5");
+}

@@ -11,7 +11,6 @@
 #include <boost/filesystem.hpp>
 
 #include <algorithm>
-#include <limits>
 #include <stdexcept>
 #include <utility>
 
@@ -112,18 +111,9 @@ bool read_printable_area_aabb(const Slic3r::DynamicPrintConfig& cfg,
     using namespace Slic3r;
     const auto* pa = cfg.option<ConfigOptionPoints>("printable_area");
     if (!pa || pa->values.empty()) return false;
-
-    double minx =  std::numeric_limits<double>::infinity();
-    double miny =  std::numeric_limits<double>::infinity();
-    double maxx = -std::numeric_limits<double>::infinity();
-    double maxy = -std::numeric_limits<double>::infinity();
-    for (const Vec2d& pt : pa->values) {
-        minx = std::min(minx, pt.x());
-        maxx = std::max(maxx, pt.x());
-        miny = std::min(miny, pt.y());
-        maxy = std::max(maxy, pt.y());
-    }
-    bed = BoundingBoxf3(Vec3d(minx, miny, 0.0), Vec3d(maxx, maxy, 0.0));
+    BoundingBoxf bb(pa->values);
+    bed = BoundingBoxf3(Vec3d(bb.min.x(), bb.min.y(), 0.0),
+                        Vec3d(bb.max.x(), bb.max.y(), 0.0));
     return true;
 }
 
