@@ -19,6 +19,239 @@ namespace fs = boost::filesystem;
 
 namespace {
 
+using namespace Slic3r; // brings open_zip_reader / close_zip_reader / open_zip_writer / close_zip_writer into scope
+
+// Pattern for files that store_bbs_3mf references via .rels but does not
+// emit unless thumbnail_data is provided in StoreParams. Plate-numbered
+// PNG blobs only. The first capture group is the trailing integer N
+// (1-based plate number on disk); we use it to skip orphaned entries
+// whose N exceeds the current plate count (spec section 4.2: plate
+// remove must "drop their PNGs").
+static const std::regex thumbnail_re(
+    R"(^Metadata/(?:plate_(\d+)(?:_small)?|plate_no_light_(\d+)|top_(\d+)|pick_(\d+))\.png$)");
+
+// Returns true if `name` is a plate-numbered thumbnail whose trailing
+// integer N exceeds plate_count -- i.e. an orphan left over from a
+// `plate remove`. Spec section 4.2 requires we drop it.
+bool is_orphan_plate_png(const std::string& name, int plate_count)
+{
+    std::smatch m;
+    if (!std::regex_match(name, m, thumbnail_re)) return false;
+    for (size_t g = 1; g < m.size(); ++g) {
+        if (m[g].matched) {
+            try {
+                return std::stoi(m[g].str()) > plate_count;
+            } catch (...) { return false; }
+        }
+    }
+    return false;
+}
+
+// Phase 1: Open target zip, enumerate entries, identify orphan plate PNGs,
+// and extract all non-orphan blobs to memory. Closes the archive before
+// returning so no zip handle escapes this function.
+//
+// kept_names  — all non-directory entries that are not orphans; retained for
+//               to_synthesize planning.
+// orphan_names — plate-numbered PNGs whose trailing N exceeds plate_count;
+//                these are dropped so `plate remove` cleans up its PNGs.
+// blobs       — extracted (name, bytes) for every non-orphan entry.
+// opened      — false if the archive could not be opened (sentinel).
+struct TargetEntryInfo {
+    std::unordered_set<std::string>                                  kept_names;
+    std::unordered_set<std::string>                                  orphan_names;
+    std::vector<std::pair<std::string, std::vector<unsigned char>>>  blobs;
+    bool                                                             opened = false;
+};
+
+TargetEntryInfo enumerate_target_entries(const std::string& target_zip_path,
+                                         int plate_count)
+{
+    TargetEntryInfo info;
+    mz_zip_archive tgt_reader{};
+    if (!open_zip_reader(&tgt_reader, target_zip_path))
+        return info; // info.opened == false signals the caller to skip
+
+    info.opened = true;
+    const mz_uint tgt_count = mz_zip_reader_get_num_files(&tgt_reader);
+    info.kept_names.reserve(tgt_count);
+    info.blobs.reserve(tgt_count);
+    for (mz_uint i = 0; i < tgt_count; ++i) {
+        mz_zip_archive_file_stat st;
+        if (!mz_zip_reader_file_stat(&tgt_reader, i, &st)) continue;
+        if (st.m_is_directory)                             continue;
+        std::string name(st.m_filename);
+        std::replace(name.begin(), name.end(), '\\', '/');
+        // Note: we intentionally record orphan plate PNG names found in the
+        // target into a separate set so we can both
+        //   (a) avoid carrying them forward in the rewrite phase, and
+        //   (b) keep them out of `kept_names` for to_synthesize / to_copy
+        //       planning, since those orphan slots will be removed.
+        if (is_orphan_plate_png(name, plate_count)) {
+            info.orphan_names.insert(name);
+            continue;
+        }
+        // Extract the blob into memory so the archive can be closed below.
+        std::vector<unsigned char> bytes(static_cast<size_t>(st.m_uncomp_size));
+        if (!mz_zip_reader_extract_to_mem(&tgt_reader, i, bytes.data(), bytes.size(), 0))
+            continue;
+        info.kept_names.insert(name);
+        info.blobs.emplace_back(std::move(name), std::move(bytes));
+    }
+    close_zip_reader(&tgt_reader);
+    return info;
+}
+
+// Phase 2 + 3: Open source zip (if available), enumerate, extract source
+// blobs that are missing in target, and determine which placeholder PNGs to
+// synthesize. Closes the source archive before returning — no zip handle
+// escapes this function.
+//
+// source_blobs — extracted (name, bytes) for thumbnail entries that are
+//                present in source but absent in target.
+// to_synthesize — names for which a placeholder PNG must be injected.
+struct PassthroughPlan {
+    std::vector<std::pair<std::string, std::vector<unsigned char>>> source_blobs;
+    std::vector<std::string>                                        to_synthesize;
+};
+
+PassthroughPlan plan_thumbnail_passthrough(const ProjectState&    s,
+                                           const TargetEntryInfo& target)
+{
+    namespace fs = boost::filesystem;
+    PassthroughPlan plan;
+    const int plate_count = static_cast<int>(s.plates.size());
+
+    // Extract source blobs: thumbnail entries present in source but missing
+    // in target. Best-effort -- if the source archive cannot be opened, skip
+    // the copy phase and proceed to placeholder injection (which is what
+    // `plate add` on an in-memory ProjectState needs anyway).
+    const std::string& source_zip_path = s.source_path;
+    const bool has_source =
+        !source_zip_path.empty() && fs::exists(source_zip_path);
+
+    if (has_source) {
+        mz_zip_archive src_reader{};
+        if (open_zip_reader(&src_reader, source_zip_path)) {
+            const mz_uint src_count = mz_zip_reader_get_num_files(&src_reader);
+            for (mz_uint i = 0; i < src_count; ++i) {
+                mz_zip_archive_file_stat st;
+                if (!mz_zip_reader_file_stat(&src_reader, i, &st)) continue;
+                if (st.m_is_directory)                              continue;
+                std::string name(st.m_filename);
+                std::replace(name.begin(), name.end(), '\\', '/');
+                if (!std::regex_match(name, thumbnail_re)) continue;
+                // Spec section 4.2: a plate that no longer exists in
+                // ProjectState must not have its PNGs carried forward.
+                if (is_orphan_plate_png(name, plate_count)) continue;
+                if (target.kept_names.count(name))          continue;
+                std::vector<unsigned char> bytes(static_cast<size_t>(st.m_uncomp_size));
+                if (!mz_zip_reader_extract_to_mem(&src_reader, i, bytes.data(), bytes.size(), 0))
+                    continue;
+                plan.source_blobs.emplace_back(std::move(name), std::move(bytes));
+            }
+            close_zip_reader(&src_reader);
+        }
+    }
+
+    // Plan placeholder injections: for every plate index 1..plates.size(),
+    // if neither the target nor the source-blob plan covers
+    // Metadata/plate_<n>.png and Metadata/plate_<n>_small.png, synthesize a
+    // 128x128 gray placeholder. Plate numbering is 1-based on disk (see
+    // verify_plate_thumbnails / store_bbs_3mf).
+    std::unordered_set<std::string> planned_copy_names;
+    planned_copy_names.reserve(plan.source_blobs.size());
+    for (const auto& [name, bytes] : plan.source_blobs)
+        planned_copy_names.insert(name);
+
+    for (size_t i = 1; i <= s.plates.size(); ++i) {
+        const auto t = orca_cli::plate_thumbnail_paths(int(i));
+        for (const std::string& name : {t.mid, t.small}) {
+            if (target.kept_names.count(name))     continue;
+            if (planned_copy_names.count(name))    continue;
+            plan.to_synthesize.push_back(name);
+        }
+    }
+
+    return plan;
+}
+
+// Phase 4: Write rewrite archive from pre-extracted blobs.
+// Opens the target archive internally to extract blobs, then writes the
+// rewrite archive (target blobs + plan.source_blobs + placeholder
+// injections), and closes both archives before returning.
+//
+// T14 will optimize the target-blob copy by using mz_zip_writer_add_from_zip_reader
+// (raw zip-to-zip, no in-memory extraction). That is a local change to this
+// function only and does not affect the helper contract.
+void rewrite_archive_with_blobs(const std::string&       rewrite_path,
+                                const TargetEntryInfo&   target,
+                                const PassthroughPlan&   plan,
+                                const std::vector<char>& placeholder)
+{
+    // Rewrite the archive. Use the libslic3r helper so we honor the same
+    // UTF-8 path conventions store_bbs_3mf used.
+    mz_zip_archive writer{};
+    if (!open_zip_writer(&writer, rewrite_path))
+        return;
+    for (const auto& kv : target.blobs) {
+        // PNG and config blobs are already compressed / small; use default
+        // compression to match what store_bbs_3mf does.
+        mz_zip_writer_add_mem(&writer, kv.first.c_str(),
+                              kv.second.data(), kv.second.size(),
+                              MZ_DEFAULT_COMPRESSION);
+    }
+    for (const auto& kv : plan.source_blobs) {
+        mz_zip_writer_add_mem(&writer, kv.first.c_str(),
+                              kv.second.data(), kv.second.size(),
+                              MZ_NO_COMPRESSION); // PNG is already compressed
+    }
+    for (const std::string& name : plan.to_synthesize) {
+        mz_zip_writer_add_mem(&writer, name.c_str(),
+                              placeholder.data(), placeholder.size(),
+                              MZ_NO_COMPRESSION); // PNG is already compressed
+    }
+    mz_zip_writer_finalize_archive(&writer);
+    close_zip_writer(&writer);
+}
+
+// Phase 5 (swap): Atomic rename-swap: rename target -> .bak, rename
+// rewrite -> target, remove .bak. If anything fails midway, restore the
+// original via the .bak so we never end up with the target file missing on
+// disk.
+void atomic_swap_rewrite(const std::string& target_zip_path,
+                         const std::string& rewrite_path)
+{
+    namespace fs = boost::filesystem;
+
+    // Atomic rename-swap: rename target -> .bak, rename rewrite -> target,
+    // remove .bak. If anything fails midway, restore the original via the .bak
+    // so we never end up with the target file missing on disk. The previous
+    // remove+rename sequence could lose the .tmp file on a rare
+    // rename-failure path and produce a misleading "cannot open archive"
+    // error downstream from run_all_invariants.
+    const fs::path bak = fs::path(target_zip_path + ".bak");
+    boost::system::error_code ec;
+    fs::rename(target_zip_path, bak, ec);
+    if (ec) {
+        // Couldn't even start the swap -- abort the passthrough cleanly.
+        boost::system::error_code ec2;
+        fs::remove(rewrite_path, ec2);
+        throw InvariantViolation(
+            "thumbnail passthrough rewrite-swap failed (could not rename target): " + ec.message());
+    }
+    fs::rename(rewrite_path, target_zip_path, ec);
+    if (ec) {
+        // Restore the original so we don't lose data.
+        boost::system::error_code ec2;
+        fs::rename(bak, target_zip_path, ec2);
+        fs::remove(rewrite_path, ec2);
+        throw InvariantViolation(
+            "thumbnail passthrough rewrite-swap failed (could not install rewrite): " + ec.message());
+    }
+    fs::remove(bak, ec);
+}
+
 // store_bbs_3mf always writes relationship entries pointing at
 //   /Metadata/plate_<n>.png            (cover-thumbnail-middle)
 //   /Metadata/plate_<n>_small.png      (cover-thumbnail-small)
@@ -56,217 +289,35 @@ namespace {
 void passthrough_missing_thumbnails(const ProjectState& s,
                                     const std::string&  target_zip_path)
 {
-    using namespace Slic3r;
-    namespace fs = boost::filesystem;
-
-    const std::string& source_zip_path = s.source_path;
-    const bool has_source =
-        !source_zip_path.empty() && fs::exists(source_zip_path);
-
-    // Pattern for files that store_bbs_3mf references via .rels but does not
-    // emit unless thumbnail_data is provided in StoreParams. Plate-numbered
-    // PNG blobs only. The first capture group is the trailing integer N
-    // (1-based plate number on disk); we use it to skip orphaned entries
-    // whose N exceeds the current plate count (spec section 4.2: plate
-    // remove must "drop their PNGs").
-    static const std::regex thumbnail_re(
-        R"(^Metadata/(?:plate_(\d+)(?:_small)?|plate_no_light_(\d+)|top_(\d+)|pick_(\d+))\.png$)");
-    const int plate_count = static_cast<int>(s.plates.size());
-
-    // Returns true if `name` is a plate-numbered thumbnail whose trailing
-    // integer N exceeds the current plate count -- i.e. an orphan left over
-    // from a `plate remove`. Spec section 4.2 requires we drop it.
-    auto is_orphan_plate_png = [&](const std::string& name) {
-        std::smatch m;
-        if (!std::regex_match(name, m, thumbnail_re)) return false;
-        for (size_t g = 1; g < m.size(); ++g) {
-            if (m[g].matched) {
-                try {
-                    return std::stoi(m[g].str()) > plate_count;
-                } catch (...) { return false; }
-            }
-        }
-        return false;
-    };
-
-    // Open target as reader to enumerate existing entries.
-    mz_zip_archive tgt_reader{};
-    if (!open_zip_reader(&tgt_reader, target_zip_path))
-        return;
-
-    // Note: we intentionally record orphan plate PNG names found in the
-    // target into a separate set so we can both
-    //   (a) avoid carrying them forward in the rewrite phase, and
-    //   (b) keep them out of `target_entries` for to_synthesize / to_copy
-    //       planning, since those orphan slots will be removed.
-    std::unordered_set<std::string> target_entries;
-    std::unordered_set<std::string> target_orphans;
-    const mz_uint tgt_count = mz_zip_reader_get_num_files(&tgt_reader);
-    target_entries.reserve(tgt_count);
-    for (mz_uint i = 0; i < tgt_count; ++i) {
-        mz_zip_archive_file_stat st;
-        if (!mz_zip_reader_file_stat(&tgt_reader, i, &st)) continue;
-        if (st.m_is_directory)                             continue;
-        std::string name(st.m_filename);
-        std::replace(name.begin(), name.end(), '\\', '/');
-        if (is_orphan_plate_png(name)) {
-            target_orphans.insert(name);
-            continue;
-        }
-        target_entries.insert(name);
-    }
-
-    // Plan source-copy: collect (source_index, name) pairs for thumbnail
-    // blobs present in source but missing in target. Best-effort -- if the
-    // source archive cannot be opened, we just skip the copy phase and
-    // proceed to placeholder injection (which is what `plate add` on an
-    // in-memory ProjectState needs anyway).
-    struct PendingCopy { mz_uint src_index; std::string name; };
-    std::vector<PendingCopy> to_copy;
-    mz_zip_archive src_reader{};
-    bool src_opened = false;
-    if (has_source && open_zip_reader(&src_reader, source_zip_path)) {
-        src_opened = true;
-        const mz_uint src_count = mz_zip_reader_get_num_files(&src_reader);
-        for (mz_uint i = 0; i < src_count; ++i) {
-            mz_zip_archive_file_stat st;
-            if (!mz_zip_reader_file_stat(&src_reader, i, &st)) continue;
-            if (st.m_is_directory)                             continue;
-            std::string name(st.m_filename);
-            std::replace(name.begin(), name.end(), '\\', '/');
-            if (!std::regex_match(name, thumbnail_re)) continue;
-            // Spec section 4.2: a plate that no longer exists in
-            // ProjectState must not have its PNGs carried forward.
-            if (is_orphan_plate_png(name)) continue;
-            if (target_entries.find(name) != target_entries.end()) continue;
-            to_copy.push_back({i, std::move(name)});
-        }
-    }
-
-    // Plan placeholder injections: for every plate index 1..plates.size(),
-    // if neither the target nor the source-copy plan covers
-    // Metadata/plate_<n>.png and Metadata/plate_<n>_small.png, synthesize a
-    // 128x128 gray placeholder. Plate numbering is 1-based on disk (see
-    // verify_plate_thumbnails / store_bbs_3mf).
-    std::unordered_set<std::string> planned_copy_names;
-    planned_copy_names.reserve(to_copy.size());
-    for (const auto& c : to_copy) planned_copy_names.insert(c.name);
-
-    std::vector<std::string> to_synthesize;
-    for (size_t i = 1; i <= s.plates.size(); ++i) {
-        const auto t = orca_cli::plate_thumbnail_paths(int(i));
-        for (const std::string& name : {t.mid, t.small}) {
-            if (target_entries.count(name))     continue;
-            if (planned_copy_names.count(name)) continue;
-            to_synthesize.push_back(name);
-        }
-    }
-
-    if (to_copy.empty() && to_synthesize.empty() && target_orphans.empty()) {
-        if (src_opened) close_zip_reader(&src_reader);
-        close_zip_reader(&tgt_reader);
+    // Phase 1: open, enumerate, extract, close — all inside the helper.
+    auto target = enumerate_target_entries(target_zip_path, int(s.plates.size()));
+    if (!target.opened) {
+        // Archive could not be opened — best-effort fallthrough, nothing to do.
         return;
     }
 
-    // Rewrite the target archive: copy every existing entry, then append the
-    // missing thumbnail blobs from source, then append synthesized
-    // placeholders. We close the target reader after we are done reading;
-    // for the rewrite phase we read into memory then re-emit. This is fine
-    // for project files in the MB range.
-    std::vector<std::pair<std::string, std::vector<unsigned char>>> tgt_blobs;
-    tgt_blobs.reserve(tgt_count);
-    for (mz_uint i = 0; i < tgt_count; ++i) {
-        mz_zip_archive_file_stat st;
-        if (!mz_zip_reader_file_stat(&tgt_reader, i, &st)) continue;
-        if (st.m_is_directory)                             continue;
-        std::string name(st.m_filename);
-        std::replace(name.begin(), name.end(), '\\', '/');
-        // Drop orphan plate-numbered PNGs (spec section 4.2: plate remove
-        // must drop their PNGs). These are entries whose trailing integer
-        // N exceeds the current plate count.
-        if (target_orphans.count(name)) continue;
-        std::vector<unsigned char> bytes(static_cast<size_t>(st.m_uncomp_size));
-        if (!mz_zip_reader_extract_to_mem(&tgt_reader, i, bytes.data(), bytes.size(), 0))
-            continue;
-        tgt_blobs.emplace_back(std::move(name), std::move(bytes));
-    }
+    // Phase 2+3: open source, extract blobs, close — all inside the helper.
+    auto plan = plan_thumbnail_passthrough(s, target);
 
-    std::vector<std::pair<std::string, std::vector<unsigned char>>> src_blobs;
-    src_blobs.reserve(to_copy.size());
-    if (src_opened) {
-        for (const auto& c : to_copy) {
-            mz_zip_archive_file_stat st;
-            if (!mz_zip_reader_file_stat(&src_reader, c.src_index, &st)) continue;
-            std::vector<unsigned char> bytes(static_cast<size_t>(st.m_uncomp_size));
-            if (!mz_zip_reader_extract_to_mem(&src_reader, c.src_index, bytes.data(), bytes.size(), 0))
-                continue;
-            src_blobs.emplace_back(c.name, std::move(bytes));
-        }
+    if (plan.source_blobs.empty() &&
+        plan.to_synthesize.empty()  &&
+        target.orphan_names.empty()) {
+        return;
     }
-
-    if (src_opened) close_zip_reader(&src_reader);
-    close_zip_reader(&tgt_reader);
 
     // Build the placeholder PNG bytes once and reuse for every synthesized
     // entry. Both plate_N.png and plate_N_small.png get the same 128x128
     // gray placeholder; the GUI may render the same image at two sizes but
     // will not fail to load or crash. This is acceptable for v1.
     std::vector<char> placeholder;
-    if (!to_synthesize.empty())
+    if (!plan.to_synthesize.empty())
         placeholder = make_placeholder_png_128_gray_C0();
 
-    // Rewrite the archive. Use the libslic3r helper so we honor the same
-    // UTF-8 path conventions store_bbs_3mf used.
+    // Phase 4: write rewrite archive from pre-extracted blobs — no zip
+    // handles flow to or from this function.
     const std::string rewrite_path = target_zip_path + ".rewrite";
-    mz_zip_archive writer{};
-    if (!open_zip_writer(&writer, rewrite_path))
-        return;
-    for (const auto& kv : tgt_blobs) {
-        // PNG and config blobs are already compressed / small; use default
-        // compression to match what store_bbs_3mf does.
-        mz_zip_writer_add_mem(&writer, kv.first.c_str(),
-                              kv.second.data(), kv.second.size(),
-                              MZ_DEFAULT_COMPRESSION);
-    }
-    for (const auto& kv : src_blobs) {
-        mz_zip_writer_add_mem(&writer, kv.first.c_str(),
-                              kv.second.data(), kv.second.size(),
-                              MZ_NO_COMPRESSION); // PNG is already compressed
-    }
-    for (const std::string& name : to_synthesize) {
-        mz_zip_writer_add_mem(&writer, name.c_str(),
-                              placeholder.data(), placeholder.size(),
-                              MZ_NO_COMPRESSION); // PNG is already compressed
-    }
-    mz_zip_writer_finalize_archive(&writer);
-    close_zip_writer(&writer);
-
-    // Atomic rename-swap: rename target -> .bak, rename rewrite -> target,
-    // remove .bak. If anything fails midway, restore the original via the .bak
-    // so we never end up with the target file missing on disk. The previous
-    // remove+rename sequence could lose the .tmp file on a rare
-    // rename-failure path and produce a misleading "cannot open archive"
-    // error downstream from run_all_invariants.
-    const fs::path bak = fs::path(target_zip_path + ".bak");
-    boost::system::error_code ec;
-    fs::rename(target_zip_path, bak, ec);
-    if (ec) {
-        // Couldn't even start the swap -- abort the passthrough cleanly.
-        boost::system::error_code ec2;
-        fs::remove(rewrite_path, ec2);
-        throw InvariantViolation(
-            "thumbnail passthrough rewrite-swap failed (could not rename target): " + ec.message());
-    }
-    fs::rename(rewrite_path, target_zip_path, ec);
-    if (ec) {
-        // Restore the original so we don't lose data.
-        boost::system::error_code ec2;
-        fs::rename(bak, target_zip_path, ec2);
-        fs::remove(rewrite_path, ec2);
-        throw InvariantViolation(
-            "thumbnail passthrough rewrite-swap failed (could not install rewrite): " + ec.message());
-    }
-    fs::remove(bak, ec);
+    rewrite_archive_with_blobs(rewrite_path, target, plan, placeholder);
+    atomic_swap_rewrite(target_zip_path, rewrite_path);
 }
 
 } // namespace
