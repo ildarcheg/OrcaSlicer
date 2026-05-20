@@ -1260,7 +1260,7 @@ Add the includes at the top of `src/cli/project_ops.cpp` (if not already present
 
 In `src/cli/project_ops.cpp`, find the `merge_object_parts` function. Insert two pieces:
 
-**Piece A** — directly after the empty-mesh block (after the `non_empty_indices` filter + size check), declare the stash and run the agreement check. This sits BEFORE the filament-agreement block from Task 7:
+**Piece A** — directly after the empty-mesh block (after the `non_empty_indices` filter + size check), declare the stash and run the agreement check. This sits AFTER the filament-agreement block from Task 7 (so the validation order matches Section 3's deterministic precedence: step 7 fires before step 8):
 
 ```cpp
     // Section 3 precedence step 8: per-volume non-extruder config
