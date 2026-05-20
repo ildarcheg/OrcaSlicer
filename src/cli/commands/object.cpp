@@ -20,6 +20,7 @@
 #include <cstdlib>
 #include <exception>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -224,6 +225,14 @@ void register_object_subcmd(CLI::App& app, GlobalOpts& g)
     static int         sf_slot = 0;
     // Phase 8: state for `object split-to-parts`.
     static std::string split_file, split_name;
+    // Phase 9: state for `object merge-parts`. `merge_filament` has no
+    // "unset" sentinel -- we use CLI11's `count("--filament") > 0` in
+    // the callback to distinguish "user passed --filament" from "user
+    // did not pass --filament". This way `--filament 0` reaches the
+    // range-check correctly (and is rejected as out-of-range) instead
+    // of being silently swallowed as "no override".
+    static std::string merge_file, merge_name, merge_parts, merge_into;
+    static int         merge_filament = 0;
 
     // -- object add --------------------------------------------------------
     auto* add = obj->add_subcommand("add", "add an STL to a plate");
@@ -319,6 +328,97 @@ void register_object_subcmd(CLI::App& app, GlobalOpts& g)
         std::exit(run_mutation(g, split_file,
             "split object '" + split_name + "' into parts", em,
             [](ProjectState& s) { split_object_to_parts(s, split_name); }));
+    });
+
+    // -- object merge-parts (Phase 9) -------------------------------------
+    // Combine a subset of an object's ModelVolumes into a single merged
+    // ModelVolume. Natural inverse of split-to-parts.
+    //
+    // Exception mapping:
+    //   DuplicateNameError    -> ExitCode::duplicate_name  (exit 5, case 8)
+    //   std::out_of_range     -> ExitCode::unknown_reference (exit 6,
+    //                                cases 5, 6, 7)
+    //   std::invalid_argument -> ExitCode::invalid_state   (exit 7,
+    //                                cases 10, 11, 12, 13, 14)
+    auto* merge = obj->add_subcommand("merge-parts",
+        "combine a subset of an object's parts into a single merged part");
+    merge->add_option("file", merge_file, "input .3mf path")->required();
+    merge->add_option("--name", merge_name,
+                      "name of the parent object")->required();
+    merge->add_option("--parts", merge_parts,
+                      "comma-separated list of source volume names (>=2)")
+        ->required();
+    merge->add_option("--into", merge_into,
+                      "name for the resulting merged volume")->required();
+    auto* merge_filament_opt = merge->add_option("--filament", merge_filament,
+                      "explicit filament slot to assign to the merged volume "
+                      "(1-based); required when sources have differing extruders");
+    merge->add_option("--output", g.output,
+                      "write result to this path instead of overwriting input");
+    merge->callback([&g, merge_filament_opt]() {
+        // Section 3 precedence step 1: parse-level validation (usage_error).
+        if (merge_into.empty()) {
+            print_err(g, ExitCode::usage_error,
+                "merge-parts --into must be non-empty");
+            std::exit(int(ExitCode::usage_error));
+        }
+        // Split the comma list. Empty -> case 1; size==1 -> case 2;
+        // duplicates -> case 3. All map to usage_error.
+        std::vector<std::string> parts;
+        {
+            std::string cur;
+            for (char c : merge_parts) {
+                if (c == ',') {
+                    if (!cur.empty()) parts.push_back(cur);
+                    cur.clear();
+                } else {
+                    cur.push_back(c);
+                }
+            }
+            if (!cur.empty()) parts.push_back(cur);
+        }
+        if (parts.empty()) {
+            print_err(g, ExitCode::usage_error,
+                "merge-parts --parts must be non-empty (>=2 source names)");
+            std::exit(int(ExitCode::usage_error));
+        }
+        if (parts.size() < 2) {
+            print_err(g, ExitCode::usage_error,
+                "merge-parts requires >=2 source parts");
+            std::exit(int(ExitCode::usage_error));
+        }
+        {
+            std::set<std::string> seen;
+            for (const auto& n : parts) {
+                if (!seen.insert(n).second) {
+                    print_err(g, ExitCode::usage_error,
+                        "merge-parts --parts contains duplicate name '" +
+                        n + "'");
+                    std::exit(int(ExitCode::usage_error));
+                }
+            }
+        }
+
+        // Distinguish "user passed --filament" from "user did not pass it"
+        // via CLI11's count(); avoids the `int == 0` sentinel ambiguity
+        // (--filament 0 must reach the range check and be rejected, not
+        // silently treated as "no override").
+        std::optional<int> filament_override;
+        if (merge_filament_opt->count() > 0) {
+            filament_override = merge_filament;
+        }
+
+        MutationExceptionMap em;
+        em.on<DuplicateNameError>(ExitCode::duplicate_name)
+          .set_default_invalid_argument(ExitCode::invalid_state)
+          .set_default_out_of_range(ExitCode::unknown_reference);
+        std::exit(run_mutation(g, merge_file,
+            "merge parts of object '" + merge_name + "' into '" +
+                merge_into + "'", em,
+            [parts, filament_override](ProjectState& s) {
+                merge_object_parts(s, merge_name, parts,
+                                   merge_into, filament_override);
+            }));
     });
 
     // -- object list -------------------------------------------------------
