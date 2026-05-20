@@ -185,10 +185,16 @@ void add_object(ProjectState& s, const AddObjectParams& p)
         bed = BoundingBoxf3(Vec3d(0, 0, 0), Vec3d(250, 250, 250));
     }
 
-    // Per-plate origin offset (sqrt grid). Strides = bed extent + a 10 mm
-    // gap so neighboring plates don't visually overlap in the GUI grid.
-    const double stride_x = (bed.max.x() - bed.min.x()) + 10.0;
-    const double stride_y = (bed.max.y() - bed.min.y()) + 10.0;
+    // Per-plate origin offset (sqrt grid). Stride MUST match OrcaSlicer's
+    // PartPlateList::plate_stride_{x,y}() which is m_plate_{width,depth} *
+    // (1 + LOGICAL_PART_PLATE_GAP), where LOGICAL_PART_PLATE_GAP = 1/5
+    // (src/slic3r/GUI/PartPlate.cpp:55). Using a fixed +10 mm gap instead
+    // of this proportional stride silently puts grid-placed objects in
+    // the inter-plate gap for any non-256 mm bed when multiple plates
+    // are present.
+    constexpr double GUI_PLATE_GAP_RATIO = 1.0 / 5.0;
+    const double stride_x = (bed.max.x() - bed.min.x()) * (1.0 + GUI_PLATE_GAP_RATIO);
+    const double stride_y = (bed.max.y() - bed.min.y()) * (1.0 + GUI_PLATE_GAP_RATIO);
     const Vec3d  plate_origin_offset_v = plate_origin_offset(
         plate_idx, int(s.plates.size()), stride_x, stride_y);
     const BoundingBoxf3 plate_bed(bed.min + plate_origin_offset_v,

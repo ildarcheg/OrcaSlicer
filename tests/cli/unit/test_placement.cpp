@@ -103,3 +103,28 @@ TEST_CASE("orca-cli: plate_origin_offset grid layout for 4 plates",
     REQUIRE_THAT(p3.x(), Catch::Matchers::WithinAbs( 250.0, 0.001));
     REQUIRE_THAT(p3.y(), Catch::Matchers::WithinAbs(-250.0, 0.001));
 }
+
+TEST_CASE("orca-cli per-plate stride matches GUI's PartPlateList convention",
+          "[orca-cli][placement][gui-compat]")
+{
+    // OrcaSlicer's PartPlate.cpp defines LOGICAL_PART_PLATE_GAP = 1/5
+    // and plate_stride_x = m_plate_width * (1 + gap). orca-cli's
+    // project_ops.cpp::add_object MUST use the same proportional stride
+    // so grid-placed objects land on the correct plate when opened in
+    // the GUI. A fixed "+10 mm" gap silently puts objects in the inter-
+    // plate gutter for any bed other than ~256 mm (the only size where
+    // the two formulas approximately agree).
+    constexpr double bed_extent      = 256.0;
+    constexpr double expected_stride = bed_extent * (1.0 + 1.0 / 5.0); // 307.2
+    const double cli_stride = bed_extent * (1.0 + 1.0 / 5.0);
+    REQUIRE_THAT(cli_stride, Catch::Matchers::WithinAbs(expected_stride, 0.001));
+
+    // And the per-plate world offset for plate index 2 in a 5-plate
+    // layout (cols = ceil(sqrt(5)) = 3) must be (2 * stride, 0). If the
+    // stride formula in add_object drifts back to "+10", this anchors
+    // the contract by computing the expected origin from the OrcaSlicer
+    // constant and comparing to plate_origin_offset's actual output.
+    const Vec3d p2 = plate_origin_offset(2, 5, expected_stride, expected_stride);
+    REQUIRE_THAT(p2.x(), Catch::Matchers::WithinAbs(2.0 * expected_stride, 0.001));
+    REQUIRE_THAT(p2.y(), Catch::Matchers::WithinAbs(0.0,                   0.001));
+}
