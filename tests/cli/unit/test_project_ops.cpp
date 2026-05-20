@@ -926,3 +926,34 @@ TEST_CASE("merge_object_parts allows --into matching a source name "
     REQUIRE(obj->volumes.size() == 1);
     REQUIRE(obj->volumes[0]->name == std::string("merge_reuse_1"));
 }
+
+TEST_CASE("merge_object_parts refuses non-MODEL_PART source "
+          "(case 11 -> invalid_state)",
+          "[orca-cli][merge][unit]") {
+    namespace fs = boost::filesystem;
+    using namespace orca_cli;
+    using namespace Slic3r;
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped: no reference 3mf"); return; }
+    auto s = load_project(orca_cli_test::ref_3mf().string());
+    AddObjectParams p;
+    p.plate_name  = s.plates.front()->plate_name;
+    p.stl_path    = (fs::path(ORCA_CLI_FIXTURES_DIR) / "two_cubes.stl").string();
+    p.object_name = "merge_modifier";
+    p.count       = 1;
+    REQUIRE_NOTHROW(add_object(s, p));
+    REQUIRE_NOTHROW(split_object_to_parts(s, "merge_modifier"));
+
+    // Convert the second volume into a modifier so it's no longer
+    // MODEL_PART. The merge should refuse with invalid_argument
+    // (maps to ExitCode::invalid_state at the CLI layer).
+    ModelObject* obj = find_object(s, "merge_modifier");
+    REQUIRE(obj != nullptr);
+    REQUIRE(obj->volumes.size() == 2);
+    obj->volumes[1]->set_type(ModelVolumeType::PARAMETER_MODIFIER);
+
+    REQUIRE_THROWS_AS(
+        merge_object_parts(s, "merge_modifier",
+            {"merge_modifier_1", "merge_modifier_2"},
+            "merge_modifier_main", std::nullopt),
+        std::invalid_argument);
+}

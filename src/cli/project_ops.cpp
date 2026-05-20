@@ -735,6 +735,18 @@ void merge_object_parts(ProjectState& s,
         }
     }
 
+    // Section 3 precedence step 5: source volume type (case 11).
+    // Every source must be MODEL_PART. Merging modifier / support-
+    // enforcer / etc. meshes is not meaningful in v1.
+    for (size_t idx : source_indices) {
+        if (obj.volumes[idx]->type() != ModelVolumeType::MODEL_PART) {
+            throw std::invalid_argument(
+                "cannot merge: source '" + obj.volumes[idx]->name +
+                "' is not a model part (type=" +
+                std::to_string(int(obj.volumes[idx]->type())) + ")");
+        }
+    }
+
     // Bake-in transform + concat. Lowest-existing-index = min element.
     const size_t anchor_idx =
         *std::min_element(source_indices.begin(), source_indices.end());
