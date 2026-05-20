@@ -1271,3 +1271,95 @@ TEST_CASE("merge_object_parts strict rule rejects mixed carry/no-carry "
         REQUIRE(msg.find("wall_loops") != std::string::npos);
     }
 }
+
+TEST_CASE("merge_object_parts bakes in source get_matrix() before concat "
+          "(test #12 -- AABB sanity)",
+          "[orca-cli][merge][unit]") {
+    namespace fs = boost::filesystem;
+    using namespace orca_cli;
+    using namespace Slic3r;
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped: no reference 3mf"); return; }
+    auto s = load_project(orca_cli_test::ref_3mf().string());
+    AddObjectParams p;
+    p.plate_name  = s.plates.front()->plate_name;
+    p.stl_path    = (fs::path(ORCA_CLI_FIXTURES_DIR) / "two_cubes.stl").string();
+    p.object_name = "merge_bake";
+    p.count       = 1;
+    REQUIRE_NOTHROW(add_object(s, p));
+    REQUIRE_NOTHROW(split_object_to_parts(s, "merge_bake"));
+
+    // Apply a translation matrix to source 2 only. Bake-in must produce
+    // a merged AABB that reflects the offset.
+    ModelObject* obj = find_object(s, "merge_bake");
+    REQUIRE(obj != nullptr);
+    REQUIRE(obj->volumes.size() == 2);
+    const BoundingBoxf3 b1_pre = obj->volumes[0]->mesh().bounding_box();
+    Transform3d offset = Transform3d::Identity();
+    offset.translate(Vec3d(100.0, 0.0, 0.0));
+    obj->volumes[1]->set_transformation(Geometry::Transformation(offset));
+
+    REQUIRE_NOTHROW(merge_object_parts(s, "merge_bake",
+        {"merge_bake_1", "merge_bake_2"},
+        "merge_bake_main", std::nullopt));
+
+    auto* obj2 = find_object(s, "merge_bake");
+    REQUIRE(obj2 != nullptr);
+    REQUIRE(obj2->volumes.size() == 1);
+    const BoundingBoxf3 merged_bb = obj2->volumes[0]->mesh().bounding_box();
+    // After applying a +100 x-translation to source 2's volume transform,
+    // the bake-in must embed those translated vertices into the merged mesh.
+    // Source 2's intrinsic mesh has an x-extent whose maximum is at least
+    // as large as source 1's (they come from the same two_cubes.stl split).
+    // Therefore the merged AABB max.x must reach at least
+    // (source1.max.x + 100 - epsilon).
+    INFO("merged bbox: min=" << merged_bb.min.x() << "," << merged_bb.min.y() << "," << merged_bb.min.z()
+         << "  max=" << merged_bb.max.x() << "," << merged_bb.max.y() << "," << merged_bb.max.z()
+         << "  pre-merge source1 bbox: min=" << b1_pre.min.x() << ",max=" << b1_pre.max.x());
+    REQUIRE(merged_bb.max.x() >= b1_pre.max.x() + 100.0 - 1e-3);
+}
+
+TEST_CASE("merge_object_parts places merged volume at LOWEST-EXISTING-INDEX "
+          "source slot regardless of --parts order (test #14)",
+          "[orca-cli][merge][unit]") {
+    namespace fs = boost::filesystem;
+    using namespace orca_cli;
+    using namespace Slic3r;
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped: no reference 3mf"); return; }
+    auto s = load_project(orca_cli_test::ref_3mf().string());
+    AddObjectParams p;
+    p.plate_name  = s.plates.front()->plate_name;
+    p.stl_path    = (fs::path(ORCA_CLI_FIXTURES_DIR) / "two_cubes.stl").string();
+    p.object_name = "merge_order";
+    p.count       = 1;
+    REQUIRE_NOTHROW(add_object(s, p));
+    REQUIRE_NOTHROW(split_object_to_parts(s, "merge_order"));
+
+    // After split, volumes are [merge_order_1, merge_order_2]. Add a
+    // third volume "merge_order_3" by cloning the first volume's mesh,
+    // then a fourth "merge_order_4" similarly. Now obj.volumes is
+    // [merge_order_1 (idx 0), merge_order_2 (idx 1), merge_order_3 (idx 2),
+    //  merge_order_4 (idx 3)].
+    ModelObject* obj = find_object(s, "merge_order");
+    REQUIRE(obj != nullptr);
+    REQUIRE(obj->volumes.size() == 2);
+    TriangleMesh m_a(obj->volumes[0]->mesh());
+    ModelVolume* v3 = obj->add_volume(m_a, /*modify_to_center_geometry=*/false);
+    v3->name = "merge_order_3";
+    TriangleMesh m_b(obj->volumes[0]->mesh());
+    ModelVolume* v4 = obj->add_volume(m_b, /*modify_to_center_geometry=*/false);
+    v4->name = "merge_order_4";
+    REQUIRE(obj->volumes.size() == 4);
+
+    // Merge {merge_order_3, merge_order_1, merge_order_2} -- a non-
+    // monotonic --parts order. The anchor should be merge_order_1
+    // (lowest existing index = 0). Resulting volumes: [merged, merge_order_4].
+    REQUIRE_NOTHROW(merge_object_parts(s, "merge_order",
+        {"merge_order_3", "merge_order_1", "merge_order_2"},
+        "M", std::nullopt));
+
+    auto* obj2 = find_object(s, "merge_order");
+    REQUIRE(obj2 != nullptr);
+    REQUIRE(obj2->volumes.size() == 2);
+    REQUIRE(obj2->volumes[0]->name == std::string("M"));
+    REQUIRE(obj2->volumes[1]->name == std::string("merge_order_4"));
+}
