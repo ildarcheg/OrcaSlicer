@@ -747,14 +747,36 @@ void merge_object_parts(ProjectState& s,
         }
     }
 
-    // Bake-in transform + concat. Lowest-existing-index = min element.
+    // Section 3 precedence step 6: empty-mesh handling (cases 12, 13).
+    // Sources with empty meshes are silently dropped (matches
+    // libslic3r's own ModelObject::merge() at Model.cpp:2181-2183).
+    // After dropping, require >= 2 non-empty for a meaningful merge.
+    std::vector<size_t> non_empty_indices;
+    non_empty_indices.reserve(source_indices.size());
+    for (size_t idx : source_indices) {
+        if (!obj.volumes[idx]->mesh().empty()) {
+            non_empty_indices.push_back(idx);
+        }
+    }
+    if (non_empty_indices.empty()) {
+        throw std::invalid_argument(
+            "cannot merge: all source parts have empty meshes");
+    }
+    if (non_empty_indices.size() < 2) {
+        throw std::invalid_argument(
+            "cannot merge: merge requires >=2 non-empty source meshes "
+            "(after dropping empty sources)");
+    }
+
+    // Bake-in transform + concat. Anchor = lowest existing index among
+    // NON-EMPTY sources. An empty source has no geometry to anchor and
+    // would produce a confusing inspect-output if it stole the slot.
     const size_t anchor_idx =
-        *std::min_element(source_indices.begin(), source_indices.end());
+        *std::min_element(non_empty_indices.begin(), non_empty_indices.end());
 
     TriangleMesh merged_mesh;
-    for (size_t idx : source_indices) {
+    for (size_t idx : non_empty_indices) {
         ModelVolume* v = obj.volumes[idx];
-        if (v->mesh().empty()) continue;
         TriangleMesh m(v->mesh());
         m.transform(v->get_matrix(), /*fix_left_handed=*/true);
         merged_mesh.merge(m);

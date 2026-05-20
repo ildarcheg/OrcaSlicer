@@ -957,3 +957,34 @@ TEST_CASE("merge_object_parts refuses non-MODEL_PART source "
             "merge_modifier_main", std::nullopt),
         std::invalid_argument);
 }
+
+TEST_CASE("merge_object_parts refuses when <2 non-empty sources remain "
+          "(case 13 -> invalid_state)",
+          "[orca-cli][merge][unit]") {
+    namespace fs = boost::filesystem;
+    using namespace orca_cli;
+    using namespace Slic3r;
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped: no reference 3mf"); return; }
+    auto s = load_project(orca_cli_test::ref_3mf().string());
+    AddObjectParams p;
+    p.plate_name  = s.plates.front()->plate_name;
+    p.stl_path    = (fs::path(ORCA_CLI_FIXTURES_DIR) / "two_cubes.stl").string();
+    p.object_name = "merge_empty";
+    p.count       = 1;
+    REQUIRE_NOTHROW(add_object(s, p));
+    REQUIRE_NOTHROW(split_object_to_parts(s, "merge_empty"));
+
+    // Replace one of the two volumes' meshes with an empty mesh,
+    // simulating a stale / broken volume. After dropping empties only
+    // 1 non-empty source remains -> case 13 refusal.
+    ModelObject* obj = find_object(s, "merge_empty");
+    REQUIRE(obj != nullptr);
+    REQUIRE(obj->volumes.size() == 2);
+    obj->volumes[1]->reset_mesh();
+
+    REQUIRE_THROWS_AS(
+        merge_object_parts(s, "merge_empty",
+            {"merge_empty_1", "merge_empty_2"},
+            "merge_empty_main", std::nullopt),
+        std::invalid_argument);
+}
