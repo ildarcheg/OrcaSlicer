@@ -241,6 +241,9 @@ Remove-Item $OUT -Force -ErrorAction SilentlyContinue
 & $CLI object add   $OUT --plate "Storage"  --stl "$STLS\000_01_test_cube.stl"     --translate 60,60 --scale 2 --name big
 & $CLI config set   $OUT --object cyl --key wall_loops --value 4
 & $CLI config set   $OUT --key sparse_infill_density --value 30%
+& $CLI object add $OUT --plate "Brackets" --stl "$STLS\box_with_text.stl" --name multi
+& $CLI object split-to-parts $OUT --name multi
+& $CLI object set-filament $OUT --name multi --part multi_1 --filament 1
 & $CLI inspect      $OUT
 & $CLI --json inspect $OUT     # structured form; pipe through ConvertFrom-Json for browsing
 ```
@@ -276,4 +279,41 @@ Anti-cases (each should exit non-zero with a clean message):
 & $CLI inspect "C:\does\not\exist.3mf"
 # expected: exit 2 (file_not_found)
 ```
+
+## Phase 8 - `object split-to-parts` + per-part filament
+
+Requires `box_with_text.stl` in `$STLS` (copy from
+`C:\Users\ildarcheg\Documents\GitHub\` once per session).
+
+```powershell
+$OUT = "$env:TEMP\orca-cli-p8.3mf"
+Copy-Item $REF $OUT -Force
+& $CLI plate add $OUT --name "MultiPlate"
+& $CLI object add $OUT --plate "MultiPlate" --stl "$STLS\box_with_text.stl" --name multipart
+& $CLI object split-to-parts $OUT --name multipart
+& $CLI object set-filament $OUT --name multipart --part multipart_1 --filament 1
+& $CLI object set-filament $OUT --name multipart --part multipart_2 --filament 2
+& $CLI --json inspect $OUT | ConvertFrom-Json | ConvertTo-Json -Depth 5
+```
+
+Expected: `multipart` becomes one ModelObject with N ModelVolumes
+(`multipart_1`, `multipart_2`, ...). `inspect --json` shows the
+`volumes` array under that object with the extruder values assigned
+by the per-part `set-filament` calls.
+
+Anti-cases (each should exit non-zero):
+```powershell
+& $CLI object split-to-parts $OUT --name multipart            # already split
+# expected: exit 7 (invalid_state)
+
+& $CLI object set-filament $OUT --name multipart --part nope --filament 1
+# expected: exit 6 (unknown_reference)
+
+& $CLI object split-to-parts $OUT --name "__missing__"
+# expected: exit 6 (unknown_reference)
+```
+
+Manual GUI smoke: open `$OUT` in OrcaSlicer; the `multipart` object
+should appear as a single object with N parts visible in the object
+panel, each part assigned to its respective filament slot.
 
