@@ -25,4 +25,9 @@ void save_project(const ProjectState& state, const std::string& target_path);
 // command uses identical semantics.
 std::string resolve_save_target(const GlobalOpts& opts, const std::string& input_file);
 
+// Common preflight used by every mutating and read-only subcommand:
+// returns ExitCode::ok if `path` exists, else prints a uniform
+// "input not found: <path>" err line and returns ExitCode::file_not_found.
+int check_input_exists(const GlobalOpts& g, const std::string& path);
+
 } // namespace orca_cli

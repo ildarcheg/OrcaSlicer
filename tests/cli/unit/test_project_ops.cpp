@@ -1,6 +1,7 @@
 #include <catch2/catch_all.hpp>
 #include "project_ops.hpp"
 #include "io.hpp"
+#include "output.hpp"
 #include "../test_common.hpp"
 
 #include <boost/filesystem.hpp>
@@ -538,4 +539,21 @@ TEST_CASE("orca-cli: unset_project_config clears the key from different_settings
         REQUIRE(std::find(process_dirty.begin(), process_dirty.end(), "sparse_infill_density")
                 == process_dirty.end());
     }
+}
+
+// -- T1: check_input_exists (M3) -------------------------------------------
+
+TEST_CASE("check_input_exists returns ok for existing file", "[orca-cli][cleanup][T1]") {
+    orca_cli::GlobalOpts g;
+    g.json = false;
+    const std::string ref = ORCA_CLI_REF_3MF;
+    int rc = orca_cli::check_input_exists(g, ref);
+    REQUIRE(rc == int(orca_cli::ExitCode::ok));
+}
+
+TEST_CASE("check_input_exists returns file_not_found for missing path", "[orca-cli][cleanup][T1]") {
+    orca_cli::GlobalOpts g;
+    g.json = false;
+    int rc = orca_cli::check_input_exists(g, "C:/this/path/does/not/exist.3mf");
+    REQUIRE(rc == int(orca_cli::ExitCode::file_not_found));
 }

@@ -29,15 +29,6 @@ namespace fs = boost::filesystem;
 
 namespace {
 
-int check_input_exists(const GlobalOpts& g, const std::string& path)
-{
-    if (!fs::exists(path)) {
-        print_err(g, ExitCode::file_not_found, "input not found: " + path);
-        return int(ExitCode::file_not_found);
-    }
-    return int(ExitCode::ok);
-}
-
 // Parse a vector flag value:
 //   "x,y"     -> (x, y, 0)
 //   "x,y,z"   -> (x, y, z)

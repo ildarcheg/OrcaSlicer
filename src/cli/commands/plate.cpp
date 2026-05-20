@@ -20,17 +20,6 @@ namespace fs = boost::filesystem;
 
 namespace {
 
-// Common preflight: file must exist on disk. Returns ExitCode::file_not_found
-// when missing, otherwise ExitCode::ok.
-int check_input_exists(const GlobalOpts& g, const std::string& path)
-{
-    if (!fs::exists(path)) {
-        print_err(g, ExitCode::file_not_found, "input not found: " + path);
-        return int(ExitCode::file_not_found);
-    }
-    return int(ExitCode::ok);
-}
-
 // Map common mutation exceptions to CLI exit codes. Caller passes a
 // std::exception pointer (already caught) and we emit the appropriate
 // err line + return the int exit code. invariant_violation is handled

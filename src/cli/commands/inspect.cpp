@@ -16,8 +16,6 @@
 #include <libslic3r/PrintConfig.hpp>
 #include <libslic3r/Format/bbs_3mf.hpp>
 
-#include <boost/filesystem.hpp>
-
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
@@ -27,18 +25,7 @@
 
 namespace orca_cli::commands {
 
-namespace fs = boost::filesystem;
-
 namespace {
-
-int check_input_exists(const GlobalOpts& g, const std::string& path)
-{
-    if (!fs::exists(path)) {
-        print_err(g, ExitCode::file_not_found, "file not found: " + path);
-        return int(ExitCode::file_not_found);
-    }
-    return int(ExitCode::ok);
-}
 
 int filament_slot_count(const ProjectState& state)
 {

@@ -1,5 +1,6 @@
 #include "io.hpp"
 #include "invariants.hpp"
+#include "output.hpp"
 #include "png_placeholder.hpp"
 
 #include <libslic3r/Format/bbs_3mf.hpp>
@@ -404,6 +405,15 @@ void save_project(const ProjectState& s, const std::string& target_path)
 std::string resolve_save_target(const GlobalOpts& opts, const std::string& input_file)
 {
     return opts.output.has_value() ? *opts.output : input_file;
+}
+
+int check_input_exists(const GlobalOpts& g, const std::string& path)
+{
+    if (!fs::exists(path)) {
+        print_err(g, ExitCode::file_not_found, "input not found: " + path);
+        return int(ExitCode::file_not_found);
+    }
+    return int(ExitCode::ok);
 }
 
 } // namespace orca_cli

@@ -22,8 +22,6 @@
 #include <libslic3r/Model.hpp>
 #include <libslic3r/PrintConfig.hpp>
 
-#include <boost/filesystem.hpp>
-
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
@@ -33,18 +31,7 @@
 
 namespace orca_cli::commands {
 
-namespace fs = boost::filesystem;
-
 namespace {
-
-int check_input_exists(const GlobalOpts& g, const std::string& path)
-{
-    if (!fs::exists(path)) {
-        print_err(g, ExitCode::file_not_found, "input not found: " + path);
-        return int(ExitCode::file_not_found);
-    }
-    return int(ExitCode::ok);
-}
 
 // Look up the current serialized value for `key`. Used by `config set`
 // and `config list` to surface the value alongside the key in the
