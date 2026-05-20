@@ -719,6 +719,22 @@ void merge_object_parts(ProjectState& s,
         }
     }
 
+    // Section 3 precedence step 4: --filament range (case 7). Validate
+    // here so an out-of-range value is reported as unknown_reference
+    // (exit 6) BEFORE we run the source-type / empty-mesh / filament-
+    // agreement checks (which would otherwise produce confusing
+    // invalid_state errors when the user simply mistyped a slot number).
+    if (filament_override.has_value()) {
+        const int slot = *filament_override;
+        const int max_slot = filament_slot_count(*s.project_config);
+        if (slot < 1 || slot > max_slot) {
+            throw std::out_of_range(
+                "filament slot " + std::to_string(slot) +
+                " out of range [1.." + std::to_string(max_slot) +
+                "] for merge into '" + merged_part_name + "'");
+        }
+    }
+
     // Bake-in transform + concat. Lowest-existing-index = min element.
     const size_t anchor_idx =
         *std::min_element(source_indices.begin(), source_indices.end());
