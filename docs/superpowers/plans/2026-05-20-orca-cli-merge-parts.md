@@ -49,6 +49,24 @@ Faster iteration on the new tag:
 
 No new test fixtures are needed. Existing Layer A `two_cubes.stl` (committed) drives the happy path; existing Layer B `box_with_text.stl` drives the realistic chain via split-to-parts → merge-parts; multi-source unit tests construct `ModelObject` instances directly in-test (the `[A,B,C,D]` shape from spec test #14, the distinct-attribution shape from spec test #13).
 
+## Cross-cutting Test Patterns (match Phase 8 conventions)
+
+Every test in this plan must follow these conventions (Phase 8's split-to-parts tests are the reference):
+
+**Unit tests** (`tests/cli/unit/test_project_ops.cpp`):
+- Guard ref-3mf access with `if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped: no reference 3mf"); return; }`.
+- Load via `auto s = load_project(orca_cli_test::ref_3mf().string());` — NOT `load_project(ORCA_CLI_REF_3MF)` directly.
+- Guard STL fixtures with `if (!boost::filesystem::exists(stl)) { SUCCEED("Skipped: no <fixture> fixture"); return; }`.
+- Use `p.plate_name = s.plates.front()->plate_name;` to inherit whatever the first plate is called.
+
+**E2E tests** (`tests/cli/e2e/test_merge.cpp`):
+- Guard with `if (ref_3mf().empty()) { SUCCEED("Skipped: reference 3mf not available"); return; }` at the top.
+- Use `const auto in = copy_ref_to_temp(tmp, "merge-X");` instead of `fs::copy_file(ORCA_CLI_REF_3MF, ...)`.
+- Run `plate add --name MergePlate` BEFORE every `object add`, then pass `--plate MergePlate`. This avoids depending on whatever plates the reference 3mf carries (the reference at T0 had `Plate 01 test` / `Plate 02 test`, neither matching the historical `Plate 1` naming).
+- Use `SUCCEED("Skipped: <reason>"); return;` for missing-fixture paths — do NOT use the Catch2 `SKIP()` macro (matches Phase 8 / `tests/cli/e2e/test_split.cpp` convention).
+
+The code blocks in each task already incorporate these conventions; this section exists so a reader can verify any departure is intentional rather than an oversight.
+
 ---
 
 ## Task 0: Pre-flight — capture baseline, verify multi-filament fixture
@@ -75,10 +93,10 @@ Run a one-off probe:
 This existing test (in `test_project_ops.cpp`) asserts `>= 1`. Confirm it passes, then check the actual slot count by running:
 
 ```powershell
-& "build\Release\orca-cli.exe" --json inspect "C:\Users\ildarcheg\Documents\GitHub\slicer_tamplates\temp_project_for_orca_slicer.3mf" | ConvertFrom-Json | Select-Object -ExpandProperty data
+& "build\src\cli\Release\orca-cli.exe" --json inspect "C:\Users\ildarcheg\Documents\GitHub\slicer_tamplates\temp_project_for_orca_slicer.3mf" | ConvertFrom-Json | Select-Object -ExpandProperty data
 ```
 
-Look at the project's `filament_settings_id` length, or inspect the printer config in the reference 3mf. If it reports `>= 2`, proceed — no remediation needed (Phase 8's filament tests already exercise multi-slot behaviour, so this is the most likely outcome).
+Look at `filament_count` in the output. If it reports `>= 2`, proceed — no remediation needed (Phase 8's filament tests already exercise multi-slot behaviour, so this is the most likely outcome). The user's reference 3mf reports `filament_count = 6` as of T0 verification on 2026-05-20.
 
 If it reports `1`, **stop and notify the user**. The filament-conflict tests (Task 7 + e2e anti-case #11) need ≥2 slots to be meaningful, and the spec explicitly flagged this as a Task 0 verification. Remediation:
 
@@ -86,17 +104,16 @@ If it reports `1`, **stop and notify the user**. The filament-conflict tests (Ta
 
 - **Last resort — (b) Construct a multi-filament `ProjectState` in-memory.** This requires extending `filament_settings_id->values` AND keeping `filament_colour`, `filament_type`, and `filament_diameter` (all `ConfigOptionStrings` / `ConfigOptionFloats`) at the same length. Setting only `filament_settings_id` produces an internally inconsistent project that the runtime invariant guard or `store_bbs_3mf` may reject. **The spec did not pre-design this in-memory fallback** — do not attempt it without coordinating with the user first. Surface the question and wait for explicit approval before writing the helper.
 
-- [ ] **Step 3: Confirm the reference 3mf has a plate named exactly "Plate 1"**
+- [ ] **Step 3: Inspect plate names (informational, not a gate)**
 
-The e2e tests in Tasks 11 and 12 hardcode `--plate "Plate 1"` when adding objects. If the reference's first plate is named something else, every e2e test will fail at the object-add step for reasons unrelated to merge-parts. One-line probe:
+The e2e tests follow Phase 8's pattern of `plate add --name MergePlate` BEFORE `object add`, so they don't depend on the reference's plate naming. This step just documents what plates are actually in the reference, for the implementer's situational awareness.
 
 ```powershell
-$j = & "build\Release\orca-cli.exe" --json inspect "C:\Users\ildarcheg\Documents\GitHub\slicer_tamplates\temp_project_for_orca_slicer.3mf" | ConvertFrom-Json
-$plates = $j.data.plates | ForEach-Object { $_.name }
-if ($plates -notcontains "Plate 1") { Write-Error "No plate named 'Plate 1'. Plates found: $($plates -join ', ')" } else { "ok: 'Plate 1' present" }
+$j = & "build\src\cli\Release\orca-cli.exe" --json inspect "C:\Users\ildarcheg\Documents\GitHub\slicer_tamplates\temp_project_for_orca_slicer.3mf" | ConvertFrom-Json
+$j.data.plates | ForEach-Object { "  - plate index=$($_.index) name='$($_.name)'" }
 ```
 
-Expected: `ok: 'Plate 1' present`. If the inspect schema names the field differently (`plate_name` vs `name`), adapt the `ForEach-Object` projection — the existing Phase 7 inspect output uses `plate_name`. If the assertion fails, notify the user: either rename the first plate in the reference 3mf, or update the e2e fixtures in this plan to match the actual plate name.
+Expected (verified 2026-05-20): two plates, `Plate 01 test` and `Plate 02 test`. The e2e tests must NOT reference these names directly — they `plate add MergePlate` first.
 
 - [ ] **Step 4: Confirm git state is clean**
 
@@ -127,7 +144,8 @@ TEST_CASE("merge_object_parts on Layer A two-source merge produces 1 volume "
           "[orca-cli][merge][unit]") {
     namespace fs = boost::filesystem;
     using namespace orca_cli;
-    ProjectState s = load_project(ORCA_CLI_REF_3MF);
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped: no reference 3mf"); return; }
+    auto s = load_project(orca_cli_test::ref_3mf().string());
     AddObjectParams p;
     p.plate_name  = s.plates.front()->plate_name;
     p.stl_path    = (fs::path(ORCA_CLI_FIXTURES_DIR) / "two_cubes.stl").string();
@@ -373,7 +391,8 @@ TEST_CASE("merge_object_parts on unknown object throws out_of_range "
           "(case 6)",
           "[orca-cli][merge][unit]") {
     using namespace orca_cli;
-    ProjectState s = load_project(ORCA_CLI_REF_3MF);
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped: no reference 3mf"); return; }
+    auto s = load_project(orca_cli_test::ref_3mf().string());
     REQUIRE_THROWS_AS(
         merge_object_parts(s, "__missing__", {"a", "b"}, "m", std::nullopt),
         std::out_of_range);
@@ -384,7 +403,8 @@ TEST_CASE("merge_object_parts on unknown source name throws out_of_range "
           "[orca-cli][merge][unit]") {
     namespace fs = boost::filesystem;
     using namespace orca_cli;
-    ProjectState s = load_project(ORCA_CLI_REF_3MF);
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped: no reference 3mf"); return; }
+    auto s = load_project(orca_cli_test::ref_3mf().string());
     AddObjectParams p;
     p.plate_name  = s.plates.front()->plate_name;
     p.stl_path    = (fs::path(ORCA_CLI_FIXTURES_DIR) / "two_cubes.stl").string();
@@ -437,7 +457,8 @@ TEST_CASE("merge_object_parts refuses --into collision with non-source "
     namespace fs = boost::filesystem;
     using namespace orca_cli;
     using namespace Slic3r;
-    ProjectState s = load_project(ORCA_CLI_REF_3MF);
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped: no reference 3mf"); return; }
+    auto s = load_project(orca_cli_test::ref_3mf().string());
     AddObjectParams p;
     p.plate_name  = s.plates.front()->plate_name;
     p.stl_path    = (fs::path(ORCA_CLI_FIXTURES_DIR) / "two_cubes.stl").string();
@@ -469,7 +490,8 @@ TEST_CASE("merge_object_parts allows --into matching a source name "
           "[orca-cli][merge][unit]") {
     namespace fs = boost::filesystem;
     using namespace orca_cli;
-    ProjectState s = load_project(ORCA_CLI_REF_3MF);
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped: no reference 3mf"); return; }
+    auto s = load_project(orca_cli_test::ref_3mf().string());
     AddObjectParams p;
     p.plate_name  = s.plates.front()->plate_name;
     p.stl_path    = (fs::path(ORCA_CLI_FIXTURES_DIR) / "two_cubes.stl").string();
@@ -610,7 +632,8 @@ TEST_CASE("merge_object_parts refuses non-MODEL_PART source "
     namespace fs = boost::filesystem;
     using namespace orca_cli;
     using namespace Slic3r;
-    ProjectState s = load_project(ORCA_CLI_REF_3MF);
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped: no reference 3mf"); return; }
+    auto s = load_project(orca_cli_test::ref_3mf().string());
     AddObjectParams p;
     p.plate_name  = s.plates.front()->plate_name;
     p.stl_path    = (fs::path(ORCA_CLI_FIXTURES_DIR) / "two_cubes.stl").string();
@@ -699,7 +722,8 @@ TEST_CASE("merge_object_parts refuses when <2 non-empty sources remain "
     namespace fs = boost::filesystem;
     using namespace orca_cli;
     using namespace Slic3r;
-    ProjectState s = load_project(ORCA_CLI_REF_3MF);
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped: no reference 3mf"); return; }
+    auto s = load_project(orca_cli_test::ref_3mf().string());
     AddObjectParams p;
     p.plate_name  = s.plates.front()->plate_name;
     p.stl_path    = (fs::path(ORCA_CLI_FIXTURES_DIR) / "two_cubes.stl").string();
@@ -852,7 +876,8 @@ TEST_CASE("merge_object_parts inherits filament when sources agree "
     namespace fs = boost::filesystem;
     using namespace orca_cli;
     using namespace Slic3r;
-    ProjectState s = load_project(ORCA_CLI_REF_3MF);
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped: no reference 3mf"); return; }
+    auto s = load_project(orca_cli_test::ref_3mf().string());
     AddObjectParams p;
     p.plate_name  = s.plates.front()->plate_name;
     p.stl_path    = (fs::path(ORCA_CLI_FIXTURES_DIR) / "two_cubes.stl").string();
@@ -880,7 +905,8 @@ TEST_CASE("merge_object_parts refuses filament conflict without override "
           "[orca-cli][merge][unit]") {
     namespace fs = boost::filesystem;
     using namespace orca_cli;
-    ProjectState s = load_project(ORCA_CLI_REF_3MF);
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped: no reference 3mf"); return; }
+    auto s = load_project(orca_cli_test::ref_3mf().string());
     AddObjectParams p;
     p.plate_name  = s.plates.front()->plate_name;
     p.stl_path    = (fs::path(ORCA_CLI_FIXTURES_DIR) / "two_cubes.stl").string();
@@ -905,7 +931,8 @@ TEST_CASE("merge_object_parts applies filament override on conflict "
           "[orca-cli][merge][unit]") {
     namespace fs = boost::filesystem;
     using namespace orca_cli;
-    ProjectState s = load_project(ORCA_CLI_REF_3MF);
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped: no reference 3mf"); return; }
+    auto s = load_project(orca_cli_test::ref_3mf().string());
     AddObjectParams p;
     p.plate_name  = s.plates.front()->plate_name;
     p.stl_path    = (fs::path(ORCA_CLI_FIXTURES_DIR) / "two_cubes.stl").string();
@@ -933,7 +960,8 @@ TEST_CASE("merge_object_parts honours explicit --filament override on "
           "[orca-cli][merge][unit]") {
     namespace fs = boost::filesystem;
     using namespace orca_cli;
-    ProjectState s = load_project(ORCA_CLI_REF_3MF);
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped: no reference 3mf"); return; }
+    auto s = load_project(orca_cli_test::ref_3mf().string());
     AddObjectParams p;
     p.plate_name  = s.plates.front()->plate_name;
     p.stl_path    = (fs::path(ORCA_CLI_FIXTURES_DIR) / "two_cubes.stl").string();
@@ -963,7 +991,8 @@ TEST_CASE("merge_object_parts excludes empty sources from filament "
     namespace fs = boost::filesystem;
     using namespace orca_cli;
     using namespace Slic3r;
-    ProjectState s = load_project(ORCA_CLI_REF_3MF);
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped: no reference 3mf"); return; }
+    auto s = load_project(orca_cli_test::ref_3mf().string());
     AddObjectParams p;
     p.plate_name  = s.plates.front()->plate_name;
     p.stl_path    = (fs::path(ORCA_CLI_FIXTURES_DIR) / "two_cubes.stl").string();
@@ -1112,7 +1141,8 @@ TEST_CASE("merge_object_parts inherits per-vol config when sources agree "
     namespace fs = boost::filesystem;
     using namespace orca_cli;
     using namespace Slic3r;
-    ProjectState s = load_project(ORCA_CLI_REF_3MF);
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped: no reference 3mf"); return; }
+    auto s = load_project(orca_cli_test::ref_3mf().string());
     AddObjectParams p;
     p.plate_name  = s.plates.front()->plate_name;
     p.stl_path    = (fs::path(ORCA_CLI_FIXTURES_DIR) / "two_cubes.stl").string();
@@ -1146,7 +1176,8 @@ TEST_CASE("merge_object_parts refuses per-vol config conflict between "
     namespace fs = boost::filesystem;
     using namespace orca_cli;
     using namespace Slic3r;
-    ProjectState s = load_project(ORCA_CLI_REF_3MF);
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped: no reference 3mf"); return; }
+    auto s = load_project(orca_cli_test::ref_3mf().string());
     AddObjectParams p;
     p.plate_name  = s.plates.front()->plate_name;
     p.stl_path    = (fs::path(ORCA_CLI_FIXTURES_DIR) / "two_cubes.stl").string();
@@ -1179,7 +1210,8 @@ TEST_CASE("merge_object_parts strict rule rejects mixed carry/no-carry "
     namespace fs = boost::filesystem;
     using namespace orca_cli;
     using namespace Slic3r;
-    ProjectState s = load_project(ORCA_CLI_REF_3MF);
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped: no reference 3mf"); return; }
+    auto s = load_project(orca_cli_test::ref_3mf().string());
     AddObjectParams p;
     p.plate_name  = s.plates.front()->plate_name;
     p.stl_path    = (fs::path(ORCA_CLI_FIXTURES_DIR) / "two_cubes.stl").string();
@@ -1353,7 +1385,8 @@ TEST_CASE("merge_object_parts bakes in source get_matrix() before concat "
     namespace fs = boost::filesystem;
     using namespace orca_cli;
     using namespace Slic3r;
-    ProjectState s = load_project(ORCA_CLI_REF_3MF);
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped: no reference 3mf"); return; }
+    auto s = load_project(orca_cli_test::ref_3mf().string());
     AddObjectParams p;
     p.plate_name  = s.plates.front()->plate_name;
     p.stl_path    = (fs::path(ORCA_CLI_FIXTURES_DIR) / "two_cubes.stl").string();
@@ -1505,7 +1538,8 @@ TEST_CASE("merge_object_parts: merged source.input_file matches "
     namespace fs = boost::filesystem;
     using namespace orca_cli;
     using namespace Slic3r;
-    ProjectState s = load_project(ORCA_CLI_REF_3MF);
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped: no reference 3mf"); return; }
+    auto s = load_project(orca_cli_test::ref_3mf().string());
     AddObjectParams p;
     p.plate_name  = s.plates.front()->plate_name;
     p.stl_path    = (fs::path(ORCA_CLI_FIXTURES_DIR) / "two_cubes.stl").string();
@@ -1552,7 +1586,8 @@ TEST_CASE("merge_object_parts: dominant post-split case keeps shared "
     namespace fs = boost::filesystem;
     using namespace orca_cli;
     using namespace Slic3r;
-    ProjectState s = load_project(ORCA_CLI_REF_3MF);
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped: no reference 3mf"); return; }
+    auto s = load_project(orca_cli_test::ref_3mf().string());
     AddObjectParams p;
     p.plate_name  = s.plates.front()->plate_name;
     p.stl_path    = (fs::path(ORCA_CLI_FIXTURES_DIR) / "two_cubes.stl").string();
@@ -1622,11 +1657,15 @@ TEST_CASE("object merge-parts happy path: 2-source merge produces 1 volume "
           "[orca-cli][merge][e2e]") {
     const auto tmp = orca_cli_test::make_temp_dir();
     const auto out = tmp / "merge_happy.3mf";
-    fs::copy_file(ORCA_CLI_REF_3MF, out);
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped: reference 3mf not available"); return; }
+    fs::copy_file(orca_cli_test::ref_3mf(), out, fs::copy_options::overwrite_existing);
     const auto stl = fs::path(ORCA_CLI_FIXTURES_DIR) / "two_cubes.stl";
+    if (!fs::exists(stl)) { SUCCEED("Skipped: two_cubes.stl fixture not available"); return; }
 
+    REQUIRE(orca_cli_test::run_cli({"plate","add",out.string(),
+        "--name","MergePlate"}).exit_code == 0);
     REQUIRE(orca_cli_test::run_cli({"object","add",out.string(),
-        "--plate","Plate 1","--stl",stl.string(),"--name","mp"}).exit_code == 0);
+        "--plate","MergePlate","--stl",stl.string(),"--name","mp"}).exit_code == 0);
     REQUIRE(orca_cli_test::run_cli({"object","split-to-parts",out.string(),
         "--name","mp"}).exit_code == 0);
     REQUIRE(orca_cli_test::run_cli({"object","merge-parts",out.string(),
@@ -1811,23 +1850,38 @@ Append to `tests/cli/e2e/test_merge.cpp`:
 
 ```cpp
 // Helper: set up a 2-volume object via split-to-parts. Returns the
-// project path so the merge subcommand has something to merge.
+// project path on success, or an EMPTY fs::path when a prerequisite
+// (reference 3mf, two_cubes.stl) is unavailable -- the caller checks
+// `out.empty()` and SUCCEED+returns so CI without local fixtures still
+// passes. Inserts a `plate add MergePlate` step so tests don't depend
+// on the reference's plate naming (which is "Plate 01 test" / "Plate
+// 02 test" as of 2026-05-20, neither matching the historical "Plate 1").
 static fs::path make_split_project(const fs::path& tmp,
                                    const std::string& obj_name) {
-    const auto out = tmp / (obj_name + ".3mf");
-    fs::copy_file(ORCA_CLI_REF_3MF, out);
+    if (orca_cli_test::ref_3mf().empty()) return {};
     const auto stl = fs::path(ORCA_CLI_FIXTURES_DIR) / "two_cubes.stl";
+    if (!fs::exists(stl)) return {};
+    const auto out = tmp / (obj_name + ".3mf");
+    fs::copy_file(orca_cli_test::ref_3mf(), out, fs::copy_options::overwrite_existing);
+    REQUIRE(orca_cli_test::run_cli({"plate","add",out.string(),
+        "--name","MergePlate"}).exit_code == 0);
     REQUIRE(orca_cli_test::run_cli({"object","add",out.string(),
-        "--plate","Plate 1","--stl",stl.string(),"--name",obj_name}).exit_code == 0);
+        "--plate","MergePlate","--stl",stl.string(),"--name",obj_name}).exit_code == 0);
     REQUIRE(orca_cli_test::run_cli({"object","split-to-parts",out.string(),
         "--name",obj_name}).exit_code == 0);
     return out;
 }
 
+// Helper macro for every anti-case: skip cleanly when the helper
+// returned an empty path because a prerequisite was missing.
+#define SKIP_IF_PROJECT_EMPTY(p) \
+    do { if ((p).empty()) { SUCCEED("Skipped: prerequisite unavailable"); return; } } while (0)
+
 TEST_CASE("merge-parts exits 1 when --parts has 1 entry (case 2)",
           "[orca-cli][merge][e2e]") {
     const auto tmp = orca_cli_test::make_temp_dir();
     const auto out = make_split_project(tmp, "single");
+    SKIP_IF_PROJECT_EMPTY(out);
     auto rc = orca_cli_test::run_cli({"object","merge-parts",out.string(),
         "--name","single","--parts","single_1","--into","main"});
     REQUIRE(rc.exit_code == 1);
@@ -1838,6 +1892,7 @@ TEST_CASE("merge-parts exits 1 when --parts has duplicate names (case 3)",
           "[orca-cli][merge][e2e]") {
     const auto tmp = orca_cli_test::make_temp_dir();
     const auto out = make_split_project(tmp, "dup");
+    SKIP_IF_PROJECT_EMPTY(out);
     auto rc = orca_cli_test::run_cli({"object","merge-parts",out.string(),
         "--name","dup","--parts","dup_1,dup_1","--into","main"});
     REQUIRE(rc.exit_code == 1);
@@ -1848,6 +1903,7 @@ TEST_CASE("merge-parts exits 1 when --into is empty (case 4)",
           "[orca-cli][merge][e2e]") {
     const auto tmp = orca_cli_test::make_temp_dir();
     const auto out = make_split_project(tmp, "noemptyinto");
+    SKIP_IF_PROJECT_EMPTY(out);
     auto rc = orca_cli_test::run_cli({"object","merge-parts",out.string(),
         "--name","noemptyinto","--parts","noemptyinto_1,noemptyinto_2",
         "--into",""});
@@ -1861,12 +1917,15 @@ TEST_CASE("merge-parts exits 5 when --into collides with non-source (case 8)",
     // Simplest path: split to N parts, then merge only a subset, then
     // attempt a second merge whose --into name = one of the survivors.
     const auto tmp = orca_cli_test::make_temp_dir();
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped: reference 3mf not available"); return; }
+    const auto stl = orca_cli_test::stl_dir() / "box_with_text.stl";
+    if (!fs::exists(stl)) { SUCCEED("Skipped: box_with_text.stl not present"); return; }
     const auto out = tmp / "collide.3mf";
-    fs::copy_file(ORCA_CLI_REF_3MF, out);
-    const auto stl = fs::path(ORCA_CLI_STL_DIR) / "box_with_text.stl";
-    if (!fs::exists(stl)) SKIP("box_with_text.stl not present at " << stl.string());
+    fs::copy_file(orca_cli_test::ref_3mf(), out, fs::copy_options::overwrite_existing);
+    REQUIRE(orca_cli_test::run_cli({"plate","add",out.string(),
+        "--name","MergePlate"}).exit_code == 0);
     REQUIRE(orca_cli_test::run_cli({"object","add",out.string(),
-        "--plate","Plate 1","--stl",stl.string(),"--name","col"}).exit_code == 0);
+        "--plate","MergePlate","--stl",stl.string(),"--name","col"}).exit_code == 0);
     REQUIRE(orca_cli_test::run_cli({"object","split-to-parts",out.string(),
         "--name","col"}).exit_code == 0);
     // box_with_text.stl produces N>=3 parts. First merge col_1+col_2 into
@@ -1885,6 +1944,7 @@ TEST_CASE("merge-parts exits 6 when source name not on object (case 5)",
           "[orca-cli][merge][e2e]") {
     const auto tmp = orca_cli_test::make_temp_dir();
     const auto out = make_split_project(tmp, "unknownsrc");
+    SKIP_IF_PROJECT_EMPTY(out);
     auto rc = orca_cli_test::run_cli({"object","merge-parts",out.string(),
         "--name","unknownsrc","--parts","unknownsrc_1,__nope__","--into","main"});
     REQUIRE(rc.exit_code == 6);
@@ -1894,8 +1954,11 @@ TEST_CASE("merge-parts exits 6 when source name not on object (case 5)",
 TEST_CASE("merge-parts exits 6 when --name object not found (case 6)",
           "[orca-cli][merge][e2e]") {
     const auto tmp = orca_cli_test::make_temp_dir();
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped: reference 3mf not available"); return; }
     const auto out = tmp / "unknownobj.3mf";
-    fs::copy_file(ORCA_CLI_REF_3MF, out);
+    fs::copy_file(orca_cli_test::ref_3mf(), out, fs::copy_options::overwrite_existing);
+    // No need to plate-add; the object lookup fires before any
+    // plate / source-volume resolution per Section 3 precedence.
     auto rc = orca_cli_test::run_cli({"object","merge-parts",out.string(),
         "--name","__nope__","--parts","a,b","--into","m"});
     REQUIRE(rc.exit_code == 6);
@@ -1906,6 +1969,7 @@ TEST_CASE("merge-parts exits 6 when --filament out of range (case 7)",
           "[orca-cli][merge][e2e]") {
     const auto tmp = orca_cli_test::make_temp_dir();
     const auto out = make_split_project(tmp, "filoor");
+    SKIP_IF_PROJECT_EMPTY(out);
     auto rc = orca_cli_test::run_cli({"object","merge-parts",out.string(),
         "--name","filoor","--parts","filoor_1,filoor_2","--into","m",
         "--filament","9999"});
@@ -1918,6 +1982,7 @@ TEST_CASE("merge-parts exits 7 on filament conflict without --filament "
           "[orca-cli][merge][e2e]") {
     const auto tmp = orca_cli_test::make_temp_dir();
     const auto out = make_split_project(tmp, "filconf");
+    SKIP_IF_PROJECT_EMPTY(out);
     // Assign distinct filaments to the two parts so the merge sees
     // disagreement. Requires filament_slot_count >= 2 (verified at T0).
     REQUIRE(orca_cli_test::run_cli({"object","set-filament",out.string(),
@@ -1941,14 +2006,17 @@ TEST_CASE("merge-parts exits 7 on per-vol config conflict (case 14, "
     // a follow-up command... actually the CLI doesn't expose this path
     // either. SKIP this e2e until a per-part config CLI verb lands;
     // unit tests #11 and #17 cover the rule at the library layer.
-    SKIP("per-vol config conflict cannot be authored via the CLI today; "
-         "covered by unit tests #11 and #17 at the project_ops layer");
+    SUCCEED("Skipped: per-vol config conflict cannot be authored via "
+            "the CLI today; covered by unit tests #11 and #17 at the "
+            "project_ops layer");
+    return;
 }
 
 TEST_CASE("merge-parts --output O writes only the side-car file",
           "[orca-cli][merge][e2e]") {
     const auto tmp = orca_cli_test::make_temp_dir();
     const auto in_ = make_split_project(tmp, "sidecar");
+    SKIP_IF_PROJECT_EMPTY(in_);
     const auto out = tmp / "merged.3mf";
     const auto in_size_before = fs::file_size(in_);
 
@@ -1969,15 +2037,18 @@ TEST_CASE("end-to-end Layer B realistic mesh: split-to-parts then "
     // merge-parts e2e tests (#1, #3-#13) use Layer A directly without
     // going through split-to-parts.
     using namespace orca_cli_test::archive;
-    const auto stl = fs::path(ORCA_CLI_STL_DIR) / "box_with_text.stl";
-    if (!fs::exists(stl)) SKIP("box_with_text.stl not present at " << stl.string());
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped: reference 3mf not available"); return; }
+    const auto stl = orca_cli_test::stl_dir() / "box_with_text.stl";
+    if (!fs::exists(stl)) { SUCCEED("Skipped: box_with_text.stl not present"); return; }
 
     const auto tmp = orca_cli_test::make_temp_dir();
     const auto out = tmp / "merge_layerb.3mf";
-    fs::copy_file(ORCA_CLI_REF_3MF, out);
+    fs::copy_file(orca_cli_test::ref_3mf(), out, fs::copy_options::overwrite_existing);
 
+    REQUIRE(orca_cli_test::run_cli({"plate","add",out.string(),
+        "--name","MergePlate"}).exit_code == 0);
     REQUIRE(orca_cli_test::run_cli({"object","add",out.string(),
-        "--plate","Plate 1","--stl",stl.string(),"--name","realB"}).exit_code == 0);
+        "--plate","MergePlate","--stl",stl.string(),"--name","realB"}).exit_code == 0);
     REQUIRE(orca_cli_test::run_cli({"object","split-to-parts",out.string(),
         "--name","realB"}).exit_code == 0);
     // Set differential filament on two parts so we know the merge needs
@@ -2068,7 +2139,8 @@ TEST_CASE("merge-parts: merged volume name + extruder + per-vol config "
     using namespace Slic3r;
     const auto tmp = orca_cli_test::make_temp_dir();
     const auto out = tmp / "merge_rt.3mf";
-    fs::copy_file(ORCA_CLI_REF_3MF, out);
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped: reference 3mf not available"); return; }
+    fs::copy_file(orca_cli_test::ref_3mf(), out, fs::copy_options::overwrite_existing);
 
     {
         ProjectState s = load_project(out.string());
@@ -2166,7 +2238,10 @@ session) for the realistic recipe.
 ```powershell
 $OUT = "$env:TEMP\orca-cli-p9.3mf"
 Copy-Item $REF $OUT -Force
-& $CLI object add $OUT --plate "Plate 1" --stl "$STLS\box_with_text.stl" --name multipart
+# Add a fresh plate so the recipe doesn't depend on whatever plates the
+# reference 3mf carries. The Phase 8 recipes do the same.
+& $CLI plate add $OUT --name MergePlate
+& $CLI object add $OUT --plate "MergePlate" --stl "$STLS\box_with_text.stl" --name multipart
 & $CLI object split-to-parts $OUT --name multipart                # N parts
 & $CLI object set-filament $OUT --name multipart --part multipart_1 --filament 1
 & $CLI object set-filament $OUT --name multipart --part multipart_2 --filament 2
