@@ -988,3 +988,180 @@ TEST_CASE("merge_object_parts refuses when <2 non-empty sources remain "
             "merge_empty_main", std::nullopt),
         std::invalid_argument);
 }
+
+namespace {
+// Helper for the filament-agreement tests. Returns the effective
+// extruder of a volume: per-volume override if set, else object-level
+// override if set, else 1. Mirrors object_volume_info's logic.
+int effective_extruder(const Slic3r::ModelObject& obj,
+                       const Slic3r::ModelVolume& v) {
+    using namespace Slic3r;
+    if (auto* ve = v.config.get().opt<ConfigOptionInt>("extruder"))
+        return ve->value;
+    if (auto* oe = obj.config.get().opt<ConfigOptionInt>("extruder"))
+        return oe->value;
+    return 1;
+}
+} // namespace
+
+TEST_CASE("merge_object_parts inherits filament when sources agree "
+          "(test #9, no --filament needed)",
+          "[orca-cli][merge][unit]") {
+    namespace fs = boost::filesystem;
+    using namespace orca_cli;
+    using namespace Slic3r;
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped: no reference 3mf"); return; }
+    auto s = load_project(orca_cli_test::ref_3mf().string());
+    AddObjectParams p;
+    p.plate_name  = s.plates.front()->plate_name;
+    p.stl_path    = (fs::path(ORCA_CLI_FIXTURES_DIR) / "two_cubes.stl").string();
+    p.object_name = "merge_fil_agree";
+    p.count       = 1;
+    REQUIRE_NOTHROW(add_object(s, p));
+    REQUIRE_NOTHROW(split_object_to_parts(s, "merge_fil_agree"));
+    REQUIRE_NOTHROW(set_object_filament(s, "merge_fil_agree", 2,
+        std::optional<std::string>("merge_fil_agree_1")));
+    REQUIRE_NOTHROW(set_object_filament(s, "merge_fil_agree", 2,
+        std::optional<std::string>("merge_fil_agree_2")));
+
+    REQUIRE_NOTHROW(merge_object_parts(s, "merge_fil_agree",
+        {"merge_fil_agree_1", "merge_fil_agree_2"},
+        "merge_fil_agree_main", std::nullopt));
+
+    auto* obj = find_object(s, "merge_fil_agree");
+    REQUIRE(obj != nullptr);
+    REQUIRE(obj->volumes.size() == 1);
+    REQUIRE(effective_extruder(*obj, *obj->volumes[0]) == 2);
+}
+
+TEST_CASE("merge_object_parts refuses filament conflict without override "
+          "(case 10 -> invalid_state, test #7)",
+          "[orca-cli][merge][unit]") {
+    namespace fs = boost::filesystem;
+    using namespace orca_cli;
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped: no reference 3mf"); return; }
+    auto s = load_project(orca_cli_test::ref_3mf().string());
+    AddObjectParams p;
+    p.plate_name  = s.plates.front()->plate_name;
+    p.stl_path    = (fs::path(ORCA_CLI_FIXTURES_DIR) / "two_cubes.stl").string();
+    p.object_name = "merge_fil_conflict";
+    p.count       = 1;
+    REQUIRE_NOTHROW(add_object(s, p));
+    REQUIRE_NOTHROW(split_object_to_parts(s, "merge_fil_conflict"));
+    REQUIRE_NOTHROW(set_object_filament(s, "merge_fil_conflict", 1,
+        std::optional<std::string>("merge_fil_conflict_1")));
+    REQUIRE_NOTHROW(set_object_filament(s, "merge_fil_conflict", 2,
+        std::optional<std::string>("merge_fil_conflict_2")));
+
+    REQUIRE_THROWS_AS(
+        merge_object_parts(s, "merge_fil_conflict",
+            {"merge_fil_conflict_1", "merge_fil_conflict_2"},
+            "merge_fil_conflict_main", std::nullopt),
+        std::invalid_argument);
+}
+
+TEST_CASE("merge_object_parts applies filament override on conflict "
+          "(test #8)",
+          "[orca-cli][merge][unit]") {
+    namespace fs = boost::filesystem;
+    using namespace orca_cli;
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped: no reference 3mf"); return; }
+    auto s = load_project(orca_cli_test::ref_3mf().string());
+    AddObjectParams p;
+    p.plate_name  = s.plates.front()->plate_name;
+    p.stl_path    = (fs::path(ORCA_CLI_FIXTURES_DIR) / "two_cubes.stl").string();
+    p.object_name = "merge_fil_over";
+    p.count       = 1;
+    REQUIRE_NOTHROW(add_object(s, p));
+    REQUIRE_NOTHROW(split_object_to_parts(s, "merge_fil_over"));
+    REQUIRE_NOTHROW(set_object_filament(s, "merge_fil_over", 1,
+        std::optional<std::string>("merge_fil_over_1")));
+    REQUIRE_NOTHROW(set_object_filament(s, "merge_fil_over", 2,
+        std::optional<std::string>("merge_fil_over_2")));
+
+    REQUIRE_NOTHROW(merge_object_parts(s, "merge_fil_over",
+        {"merge_fil_over_1", "merge_fil_over_2"},
+        "merge_fil_over_main", std::optional<int>(2)));
+
+    auto* obj = find_object(s, "merge_fil_over");
+    REQUIRE(obj != nullptr);
+    REQUIRE(obj->volumes.size() == 1);
+    REQUIRE(effective_extruder(*obj, *obj->volumes[0]) == 2);
+}
+
+TEST_CASE("merge_object_parts honours explicit --filament override on "
+          "agreeing sources (test #15)",
+          "[orca-cli][merge][unit]") {
+    namespace fs = boost::filesystem;
+    using namespace orca_cli;
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped: no reference 3mf"); return; }
+    auto s = load_project(orca_cli_test::ref_3mf().string());
+    AddObjectParams p;
+    p.plate_name  = s.plates.front()->plate_name;
+    p.stl_path    = (fs::path(ORCA_CLI_FIXTURES_DIR) / "two_cubes.stl").string();
+    p.object_name = "merge_fil_explicit";
+    p.count       = 1;
+    REQUIRE_NOTHROW(add_object(s, p));
+    REQUIRE_NOTHROW(split_object_to_parts(s, "merge_fil_explicit"));
+    REQUIRE_NOTHROW(set_object_filament(s, "merge_fil_explicit", 1,
+        std::optional<std::string>("merge_fil_explicit_1")));
+    REQUIRE_NOTHROW(set_object_filament(s, "merge_fil_explicit", 1,
+        std::optional<std::string>("merge_fil_explicit_2")));
+
+    // Sources agree on extruder=1; override to 2 must win.
+    REQUIRE_NOTHROW(merge_object_parts(s, "merge_fil_explicit",
+        {"merge_fil_explicit_1", "merge_fil_explicit_2"},
+        "merge_fil_explicit_main", std::optional<int>(2)));
+
+    auto* obj = find_object(s, "merge_fil_explicit");
+    REQUIRE(obj != nullptr);
+    REQUIRE(obj->volumes.size() == 1);
+    REQUIRE(effective_extruder(*obj, *obj->volumes[0]) == 2);
+}
+
+TEST_CASE("merge_object_parts excludes empty sources from filament "
+          "agreement check (test #16)",
+          "[orca-cli][merge][unit]") {
+    namespace fs = boost::filesystem;
+    using namespace orca_cli;
+    using namespace Slic3r;
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped: no reference 3mf"); return; }
+    auto s = load_project(orca_cli_test::ref_3mf().string());
+    AddObjectParams p;
+    p.plate_name  = s.plates.front()->plate_name;
+    p.stl_path    = (fs::path(ORCA_CLI_FIXTURES_DIR) / "two_cubes.stl").string();
+    p.object_name = "merge_fil_skipempty";
+    p.count       = 1;
+    REQUIRE_NOTHROW(add_object(s, p));
+    REQUIRE_NOTHROW(split_object_to_parts(s, "merge_fil_skipempty"));
+
+    // Add a third volume (initially with non-empty mesh from add_volume
+    // -- the only way to construct a ModelVolume), then reset its mesh
+    // and set its extruder to a deliberately-conflicting value. The
+    // empty source must NOT contribute to the agreement check.
+    ModelObject* obj = find_object(s, "merge_fil_skipempty");
+    REQUIRE(obj != nullptr);
+    REQUIRE(obj->volumes.size() == 2);
+    TriangleMesh dummy(obj->volumes[0]->mesh()); // copy a non-empty mesh
+    ModelVolume* extra = obj->add_volume(dummy);
+    extra->name = "merge_fil_skipempty_empty";
+    extra->config.set("extruder", 2);
+    extra->reset_mesh();   // now empty
+
+    REQUIRE_NOTHROW(set_object_filament(s, "merge_fil_skipempty", 1,
+        std::optional<std::string>("merge_fil_skipempty_1")));
+    REQUIRE_NOTHROW(set_object_filament(s, "merge_fil_skipempty", 1,
+        std::optional<std::string>("merge_fil_skipempty_2")));
+
+    // Three "sources" -- the empty one has ext=2 but should be excluded.
+    // The two non-empty sources agree on ext=1; no --filament needed.
+    REQUIRE_NOTHROW(merge_object_parts(s, "merge_fil_skipempty",
+        {"merge_fil_skipempty_1", "merge_fil_skipempty_2",
+         "merge_fil_skipempty_empty"},
+        "merge_fil_skipempty_main", std::nullopt));
+
+    auto* obj2 = find_object(s, "merge_fil_skipempty");
+    REQUIRE(obj2 != nullptr);
+    REQUIRE(obj2->volumes.size() == 1);
+    REQUIRE(effective_extruder(*obj2, *obj2->volumes[0]) == 1);
+}

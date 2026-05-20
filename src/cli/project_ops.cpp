@@ -11,6 +11,7 @@
 #include <boost/filesystem.hpp>
 
 #include <algorithm>
+#include <set>
 #include <stdexcept>
 #include <unordered_set>
 #include <utility>
@@ -768,6 +769,39 @@ void merge_object_parts(ProjectState& s,
             "(after dropping empty sources)");
     }
 
+    // Section 3 precedence step 7: filament agreement (case 10).
+    // Empty sources (already dropped above) are excluded from the
+    // agreement check per Q4 + Q7 of the spec. Compute the unique set
+    // of effective extruders across non-empty sources.
+    int object_extruder = 1;
+    if (auto* oe = obj.config.get().opt<Slic3r::ConfigOptionInt>("extruder")) {
+        object_extruder = oe->value;
+    }
+    std::set<int> non_empty_extruders;
+    for (size_t idx : non_empty_indices) {
+        int eff = object_extruder;
+        if (auto* ve = obj.volumes[idx]->config.get().opt<Slic3r::ConfigOptionInt>("extruder")) {
+            eff = ve->value;
+        }
+        non_empty_extruders.insert(eff);
+    }
+
+    int merged_extruder = 0;
+    if (filament_override.has_value()) {
+        // Explicit override wins regardless of agreement.
+        merged_extruder = *filament_override;
+    } else if (non_empty_extruders.size() == 1) {
+        // All non-empty sources agree -- inherit.
+        merged_extruder = *non_empty_extruders.begin();
+    } else {
+        throw std::invalid_argument(
+            "cannot merge: source parts have different filament "
+            "assignments and no --filament override was supplied. "
+            "Either unify filaments first via "
+            "'orca-cli object set-filament --part Y --filament N', "
+            "or pass '--filament N' to merge-parts.");
+    }
+
     // Bake-in transform + concat. Anchor = lowest existing index among
     // NON-EMPTY sources. An empty source has no geometry to anchor and
     // would produce a confusing inspect-output if it stole the slot.
@@ -796,6 +830,7 @@ void merge_object_parts(ProjectState& s,
     merged->name = merged_part_name;
     merged->set_transformation(Geometry::Transformation());
     merged->source = anchor_source;
+    merged->config.set("extruder", merged_extruder);
 
     // obj.add_volume pushed `merged` to the end of obj.volumes. Move it
     // to the anchor position, then erase the old anchor + the other
@@ -830,11 +865,6 @@ void merge_object_parts(ProjectState& s,
     }
     obj.volumes.swap(rebuilt);
     obj.invalidate_bounding_box();
-
-    // filament_override handling is added in Task 7. For now, the
-    // merged volume inherits whatever extruder libslic3r assigned by
-    // default. The happy-path test does not assert filament.
-    (void)filament_override;
 }
 
 } // namespace orca_cli
