@@ -739,3 +739,71 @@ TEST_CASE("split_object_to_parts preserves source attribution on every "
         }
     }
 }
+
+// -- T6: set_object_filament with optional part_name --------------------------
+
+TEST_CASE("set_object_filament without part_name still hits object-level config "
+          "(regression pin for existing P5 behaviour)",
+          "[orca-cli][split][unit]") {
+    using namespace orca_cli;
+    using namespace Slic3r;
+    ProjectState s = load_project(ORCA_CLI_REF_3MF);
+    // Take whichever object the reference 3mf provides first.
+    REQUIRE_FALSE(s.model->objects.empty());
+    const std::string name = s.model->objects.front()->name;
+    REQUIRE_NOTHROW(set_object_filament(s, name, 2));
+    ModelObject& obj = find_object_or_throw(s, name);
+    auto* opt = obj.config.get().opt<ConfigOptionInt>("extruder");
+    REQUIRE(opt != nullptr);
+    REQUIRE(opt->value == 2);
+}
+
+TEST_CASE("set_object_filament with part_name writes to the named volume's config",
+          "[orca-cli][split][unit]") {
+    namespace fs = boost::filesystem;
+    using namespace orca_cli;
+    using namespace Slic3r;
+    ProjectState s = load_project(ORCA_CLI_REF_3MF);
+    AddObjectParams p;
+    p.plate_name  = s.plates.front()->plate_name;
+    p.stl_path    = (fs::path(ORCA_CLI_FIXTURES_DIR) / "two_cubes.stl").string();
+    p.object_name = "two_cubes_f";
+    p.count       = 1;
+    REQUIRE_NOTHROW(add_object(s, p));
+    REQUIRE_NOTHROW(split_object_to_parts(s, "two_cubes_f"));
+
+    REQUIRE_NOTHROW(set_object_filament(s, "two_cubes_f", 2,
+                                        std::optional<std::string>("two_cubes_f_1")));
+    auto* obj = find_object(s, "two_cubes_f");
+    REQUIRE(obj != nullptr);
+    REQUIRE(obj->volumes.size() == 2);
+
+    auto* vol0_opt = obj->volumes[0]->config.get().opt<ConfigOptionInt>("extruder");
+    REQUIRE(vol0_opt != nullptr);
+    REQUIRE(vol0_opt->value == 2);
+
+    // Volume 1 must NOT have its config set to 2.
+    auto* vol1_opt = obj->volumes[1]->config.get().opt<ConfigOptionInt>("extruder");
+    if (vol1_opt != nullptr) {
+        REQUIRE(vol1_opt->value != 2);
+    }
+}
+
+TEST_CASE("set_object_filament with unknown part_name throws out_of_range",
+          "[orca-cli][split][unit]") {
+    namespace fs = boost::filesystem;
+    using namespace orca_cli;
+    ProjectState s = load_project(ORCA_CLI_REF_3MF);
+    AddObjectParams p;
+    p.plate_name  = s.plates.front()->plate_name;
+    p.stl_path    = (fs::path(ORCA_CLI_FIXTURES_DIR) / "two_cubes.stl").string();
+    p.object_name = "two_cubes_g";
+    p.count       = 1;
+    REQUIRE_NOTHROW(add_object(s, p));
+    REQUIRE_NOTHROW(split_object_to_parts(s, "two_cubes_g"));
+
+    REQUIRE_THROWS_AS(
+        set_object_filament(s, "two_cubes_g", 2,
+                            std::optional<std::string>("__nope__")),
+        std::out_of_range);
+}

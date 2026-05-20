@@ -190,7 +190,9 @@ void remove_object(ProjectState& s, const std::string& object_name);
 // in commands/object.cpp maps the whole class of "unknown reference"
 // failures (unknown plate, unknown object, out-of-range slot) to
 // ExitCode::unknown_reference (exit 6) -- no new exit code required.
-void set_object_filament(ProjectState& s, const std::string& object_name, int filament_slot);
+void set_object_filament(ProjectState& s, const std::string& object_name,
+                         int filament_slot,
+                         std::optional<std::string> part_name = std::nullopt);
 
 // --------------------------------------------------------------------------
 // Config mutations (P6).

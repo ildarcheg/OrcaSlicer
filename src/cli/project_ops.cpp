@@ -295,7 +295,9 @@ void add_object(ProjectState& s, const AddObjectParams& p)
     }
 }
 
-void set_object_filament(ProjectState& s, const std::string& object_name, int filament_slot)
+void set_object_filament(ProjectState& s, const std::string& object_name,
+                         int filament_slot,
+                         std::optional<std::string> part_name)
 {
     using namespace Slic3r;
 
@@ -320,11 +322,29 @@ void set_object_filament(ProjectState& s, const std::string& object_name, int fi
             "] for object '" + object_name + "'");
     }
 
-    // ModelConfigObject::set<int>("extruder", N) constructs a ConfigOptionInt
-    // under the hood (m_data.set(key, value, /*create=*/true)) and bumps the
-    // model-config timestamp. This is the same call-site shape used by the
-    // GUI's MMU and "set extruder" paths (see GUI_ObjectList.cpp:2819,
-    // ObjColorDialog.cpp:441) and by libslic3r itself in Model.cpp:3066.
+    // When part_name is supplied and non-empty, write the extruder setting to
+    // the named volume's per-volume config rather than the object-level config.
+    // This is the T6 extension for split-to-parts workflows: individual parts
+    // can be assigned different filament slots without affecting the object's
+    // own config. We do NOT touch different_settings_to_system here -- that
+    // field is for the GUI's preset diff, which is object-level only.
+    if (part_name.has_value() && !part_name->empty()) {
+        for (ModelVolume* v : obj.volumes) {
+            if (v->name == *part_name) {
+                v->config.set("extruder", filament_slot);
+                return;
+            }
+        }
+        throw std::out_of_range("part not found: " + *part_name);
+    }
+
+    // No part_name supplied (std::nullopt or empty): existing P5 object-level
+    // write. ModelConfigObject::set<int>("extruder", N) constructs a
+    // ConfigOptionInt under the hood (m_data.set(key, value, /*create=*/true))
+    // and bumps the model-config timestamp. This is the same call-site shape
+    // used by the GUI's MMU and "set extruder" paths (see
+    // GUI_ObjectList.cpp:2819, ObjColorDialog.cpp:441) and by libslic3r itself
+    // in Model.cpp:3066.
     obj.config.set("extruder", filament_slot);
 }
 
