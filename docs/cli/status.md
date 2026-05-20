@@ -279,12 +279,12 @@ Updated by each phase.
 - [x] All P0-P6 tests still pass (regression check). Test count moved
       from 104 cases / 66028 assertions (P6 baseline) to 109 cases /
       66046 assertions.
-- [ ] Manual GUI smoke: open the P7 manual-test output in OrcaSlicer
-      and verify all four plates render with the documented object
-      counts, the per-object and project-level config overrides
-      surface in the GUI, and `inspect` matches the GUI's view of
-      the file. (Pending separate manual verification per
-      `docs/cli/manual-test.md` -> Phase 7.)
+- [x] Manual GUI smoke: cumulative P7 recipe (5 plates, 3 grid-placed
+      object batches incl. `--count`, 2 explicit-transform objects,
+      project + per-object config overrides) opened in OrcaSlicer
+      and visually verified on 2026-05-20. Verified after the P3
+      stride fix below; the same recipe before the fix put
+      grid-placed objects in the inter-plate gutter.
 
 Status: P0-P7 implementation complete. Phase-by-phase manual GUI
 smokes remain pending (the unchecked items above), but every phase
@@ -360,3 +360,19 @@ following deliberate small differences:
 - JSON output key order may differ slightly (the `nlohmann::json` library
   preserves insertion order; the previous hand-rolled output had a fixed
   order). Field names and values are unchanged.
+
+## P3 stride fix (2026-05-20)
+
+Surfaced by the cumulative manual smoke above. `add_object`'s per-plate
+world-offset stride was `bed_extent + 10.0`, but OrcaSlicer's
+`PartPlateList::plate_stride_x` is `bed_extent * (1 + LOGICAL_PART_PLATE_GAP)`
+with `LOGICAL_PART_PLATE_GAP = 1/5` (`src/slic3r/GUI/PartPlate.cpp:55`).
+For a 256 mm bed that's 266 vs 307.2 — a 41 mm shortfall per plate,
+visible as grid-placed objects landing in the inter-plate gutter when
+multiple plates are present.
+
+Pre-existing defect from v2 P3, NOT introduced by the cleanup pass.
+Fixed in commit `489416bdb8` with the stride replaced by the
+proportional form, plus a `[gui-compat]` regression test pinning the
+contract against OrcaSlicer's constant. Test count moved from 123 to
+124 cases.
