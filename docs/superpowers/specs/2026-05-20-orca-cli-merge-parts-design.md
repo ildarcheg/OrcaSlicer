@@ -275,11 +275,16 @@ The `extruder` key is handled separately by Q4's smart default + override.
 
 ### Source attribution (Bug C class)
 
-The merged volume's `source.input_file` is stamped from the FIRST source's
-`source.input_file` via the existing `stamp_source_if_missing` helper
-introduced for `split-to-parts` (Phase 8 task T5). Sources from a common
-split-to-parts share an STL path; for hand-authored multi-volume objects,
-the first source's attribution is the most-likely-meaningful choice.
+The merged volume's `source.input_file` is stamped from the source with
+the **lowest existing index in `obj.volumes`** (the same source whose
+position the merged volume takes — see Section 2 / "Source volume
+placement") via the existing `stamp_source_if_missing` helper introduced
+for `split-to-parts` (Phase 8 task T5). For volumes from a common
+`split-to-parts` all sources share the same `source.input_file`, so the
+choice is moot in the dominant workflow; the rule matters only for
+hand-authored multi-volume objects. Pinning attribution to the
+lowest-existing-index source keeps "which source wins" consistent with
+placement, so the `--parts` argument order never affects output.
 
 ### Save-pipeline invariants
 
@@ -357,7 +362,7 @@ insertion position, and Layer B realistic-mesh chain.
 10. Per-volume config inherits when sources agree.
 11. Refuse: per-volume non-extruder config conflict → `invalid_state` (exit 7), message lists keys.
 12. Bake-in: source with non-identity `get_matrix()` → merged geometry reflects the transform (AABB sanity).
-13. Source attribution (Bug C lock-in): merged volume `source.input_file` matches first source.
+13. Source attribution (Bug C lock-in): merged volume `source.input_file` matches the lowest-existing-index source's `source.input_file`. Fixture exercises the rule with **distinct** attributions: construct sources `[A.input_file="a.stl", B.input_file="b.stl", C.input_file="c.stl"]` (simulating a hand-authored multi-volume object), call `merge_object_parts` with `source_part_names = ["C", "A", "B"]` (non-monotonic), assert merged `source.input_file == "a.stl"` (A's, since A had the lowest existing index). A separate sub-assertion covers the dominant post-split case where all sources share the same `input_file`.
 14. Merged volume inserted at the LOWEST-EXISTING-INDEX source's position regardless of `--parts` order: construct an object with volumes `[A, B, C, D]`, call `merge_object_parts` with `source_part_names = ["C", "A", "B"]` (non-monotonic), assert the merged volume lands at `obj.volumes[0]` (A's original slot) and remaining volumes are `[merged, D]`.
 15. Explicit `--filament N` override on agreeing sources: all sources carry extruder=1, user passes `filament_override=2`; assert merged volume has extruder=2 (the explicit override wins over inheritance).
 16. Empty sources are excluded from filament agreement check: construct sources `[empty / ext=2, non-empty / ext=1, non-empty / ext=1]` with no `filament_override`; assert merged volume inherits extruder=1 with no conflict raised.
