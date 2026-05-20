@@ -28,25 +28,24 @@ namespace fs = boost::filesystem;
 
 namespace {
 
-int do_object_add(const GlobalOpts& g,
-                  const std::string& file,
-                  const std::string& plate,
-                  const std::string& stl,
-                  int                count,
-                  const std::string& name,
-                  const std::string& translate_str,
-                  const std::string& rotate_str,
-                  const std::string& scale_str,
-                  // P5: --filament. 0 is the unset sentinel (CLI11 leaves
-                  // the bound int at its default when the flag is absent).
-                  // Any negative or positive value is forwarded to
-                  // set_object_filament for validation.
-                  int                filament_slot)
+struct AddObjectRawOpts {
+    std::string file;
+    std::string plate;
+    std::string stl;
+    int         count           = 1;
+    std::string name;
+    std::string translate_str;
+    std::string rotate_str;
+    std::string scale_str;
+    int         filament_slot   = 0; // 0 = unset
+};
+
+int do_object_add(const GlobalOpts& g, const AddObjectRawOpts& o)
 {
-    if (int rc = check_input_exists(g, file); rc != int(ExitCode::ok))
+    if (int rc = check_input_exists(g, o.file); rc != int(ExitCode::ok))
         return rc;
-    if (!fs::exists(stl)) {
-        print_err(g, ExitCode::file_not_found, "stl not found: " + stl);
+    if (!fs::exists(o.stl)) {
+        print_err(g, ExitCode::file_not_found, "stl not found: " + o.stl);
         return int(ExitCode::file_not_found);
     }
 
@@ -56,11 +55,11 @@ int do_object_add(const GlobalOpts& g,
     std::optional<Slic3r::Vec3d> translate, rotate, scale;
 
     // --translate: 2 or 3 components.
-    if (!translate_str.empty()) {
-        auto r = parse_vec3(translate_str);
+    if (!o.translate_str.empty()) {
+        auto r = parse_vec3(o.translate_str);
         if (!r || (r->component_count != 2 && r->component_count != 3)) {
             print_err(g, ExitCode::usage_error,
-                      "invalid --translate value '" + translate_str +
+                      "invalid --translate value '" + o.translate_str +
                       "' (expected x,y or x,y,z)");
             return int(ExitCode::usage_error);
         }
@@ -68,11 +67,11 @@ int do_object_add(const GlobalOpts& g,
     }
 
     // --rotate: exactly 3 components.
-    if (!rotate_str.empty()) {
-        auto r = parse_vec3(rotate_str);
+    if (!o.rotate_str.empty()) {
+        auto r = parse_vec3(o.rotate_str);
         if (!r || r->component_count != 3) {
             print_err(g, ExitCode::usage_error,
-                      "invalid --rotate value '" + rotate_str +
+                      "invalid --rotate value '" + o.rotate_str +
                       "' (expected ax,ay,az in radians)");
             return int(ExitCode::usage_error);
         }
@@ -80,25 +79,25 @@ int do_object_add(const GlobalOpts& g,
     }
 
     // --scale: scalar (1 component) or 3 components.
-    if (!scale_str.empty()) {
-        auto r = parse_vec3(scale_str);
+    if (!o.scale_str.empty()) {
+        auto r = parse_vec3(o.scale_str);
         if (!r || (r->component_count != 1 && r->component_count != 3)) {
             print_err(g, ExitCode::usage_error,
-                      "invalid --scale value '" + scale_str +
+                      "invalid --scale value '" + o.scale_str +
                       "' (expected s or sx,sy,sz)");
             return int(ExitCode::usage_error);
         }
         scale = r->values;
     }
 
-    const std::string out = resolve_save_target(g, file);
+    const std::string out = resolve_save_target(g, o.file);
     try {
-        auto state = load_project(file);
+        auto state = load_project(o.file);
         AddObjectParams p;
-        p.plate_name  = plate;
-        p.stl_path    = stl;
-        p.object_name = name;
-        p.count       = count;
+        p.plate_name  = o.plate;
+        p.stl_path    = o.stl;
+        p.object_name = o.name;
+        p.count       = o.count;
         p.translate   = translate;
         p.rotate      = rotate;
         p.scale       = scale;
@@ -108,7 +107,7 @@ int do_object_add(const GlobalOpts& g,
         // else (negative or positive) is forwarded so the validation in
         // set_object_filament reports the same error the user would see
         // from `object set-filament`.
-        if (filament_slot != 0) p.filament_slot = filament_slot;
+        if (o.filament_slot != 0) p.filament_slot = o.filament_slot;
         add_object(state, p);
         save_project(state, out);
     } catch (const PlacementFailure& e) {
@@ -133,7 +132,7 @@ int do_object_add(const GlobalOpts& g,
         return int(ExitCode::parse_failure);
     }
 
-    print_ok(g, "added object from '" + stl + "' to plate '" + plate + "'");
+    print_ok(g, "added object from '" + o.stl + "' to plate '" + o.plate + "'");
     return int(ExitCode::ok);
 }
 
@@ -310,10 +309,17 @@ void register_object_subcmd(CLI::App& app, GlobalOpts& g)
     add->add_option("--output", g.output,
                     "write result to this path instead of overwriting input");
     add->callback([&g]() {
-        std::exit(do_object_add(g, add_file, add_plate, add_stl,
-                                add_count, add_name,
-                                add_translate, add_rotate, add_scale,
-                                add_filament));
+        AddObjectRawOpts opts;
+        opts.file          = add_file;
+        opts.plate         = add_plate;
+        opts.stl           = add_stl;
+        opts.count         = add_count;
+        opts.name          = add_name;
+        opts.translate_str = add_translate;
+        opts.rotate_str    = add_rotate;
+        opts.scale_str     = add_scale;
+        opts.filament_slot = add_filament;
+        std::exit(do_object_add(g, opts));
     });
 
     // -- object remove -----------------------------------------------------
