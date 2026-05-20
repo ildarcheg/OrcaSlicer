@@ -78,9 +78,27 @@ This existing test (in `test_project_ops.cpp`) asserts `>= 1`. Confirm it passes
 & "build\Release\orca-cli.exe" --json inspect "C:\Users\ildarcheg\Documents\GitHub\slicer_tamplates\temp_project_for_orca_slicer.3mf" | ConvertFrom-Json | Select-Object -ExpandProperty data
 ```
 
-Look at the project's `filament_settings_id` length, or inspect the printer config in the reference 3mf. If it reports `>= 2`, proceed. If it reports `1`, **stop and notify the user** — the filament-conflict tests (Task 7 + e2e anti-case #11) need ≥2 slots to be meaningful, and the spec explicitly flagged this as a Task 0 verification. The remediation is either (a) the user authoring a 2-filament reference via the GUI, or (b) the tests constructing a multi-filament `ProjectState` in-memory by extending `filament_settings_id->values`.
+Look at the project's `filament_settings_id` length, or inspect the printer config in the reference 3mf. If it reports `>= 2`, proceed — no remediation needed (Phase 8's filament tests already exercise multi-slot behaviour, so this is the most likely outcome).
 
-- [ ] **Step 3: Confirm git state is clean**
+If it reports `1`, **stop and notify the user**. The filament-conflict tests (Task 7 + e2e anti-case #11) need ≥2 slots to be meaningful, and the spec explicitly flagged this as a Task 0 verification. Remediation:
+
+- **Strongly preferred — (a) Have the user author a 2-filament reference 3mf via the OrcaSlicer GUI.** Open the current reference, add a second filament slot in the filament panel, save as a new template, and update `ORCA_CLI_REF_3MF` (in `tests/cli/CMakeLists.txt` line 3 or via the cache variable). This is the path the spec assumes and the only path that produces a coherent multi-filament project state on disk.
+
+- **Last resort — (b) Construct a multi-filament `ProjectState` in-memory.** This requires extending `filament_settings_id->values` AND keeping `filament_colour`, `filament_type`, and `filament_diameter` (all `ConfigOptionStrings` / `ConfigOptionFloats`) at the same length. Setting only `filament_settings_id` produces an internally inconsistent project that the runtime invariant guard or `store_bbs_3mf` may reject. **The spec did not pre-design this in-memory fallback** — do not attempt it without coordinating with the user first. Surface the question and wait for explicit approval before writing the helper.
+
+- [ ] **Step 3: Confirm the reference 3mf has a plate named exactly "Plate 1"**
+
+The e2e tests in Tasks 11 and 12 hardcode `--plate "Plate 1"` when adding objects. If the reference's first plate is named something else, every e2e test will fail at the object-add step for reasons unrelated to merge-parts. One-line probe:
+
+```powershell
+$j = & "build\Release\orca-cli.exe" --json inspect "C:\Users\ildarcheg\Documents\GitHub\slicer_tamplates\temp_project_for_orca_slicer.3mf" | ConvertFrom-Json
+$plates = $j.data.plates | ForEach-Object { $_.name }
+if ($plates -notcontains "Plate 1") { Write-Error "No plate named 'Plate 1'. Plates found: $($plates -join ', ')" } else { "ok: 'Plate 1' present" }
+```
+
+Expected: `ok: 'Plate 1' present`. If the inspect schema names the field differently (`plate_name` vs `name`), adapt the `ForEach-Object` projection — the existing Phase 7 inspect output uses `plate_name`. If the assertion fails, notify the user: either rename the first plate in the reference 3mf, or update the e2e fixtures in this plan to match the actual plate name.
+
+- [ ] **Step 4: Confirm git state is clean**
 
 ```powershell
 git status --short
@@ -1647,9 +1665,14 @@ Expected: FAIL on the `merge-parts` CLI invocation — CLI11 returns non-zero ex
 In `src/cli/commands/object.cpp`, find the `register_object_subcmd` function. After the existing `static std::string split_file, split_name;` line near line 226, add:
 
 ```cpp
-    // Phase 9: state for `object merge-parts`.
+    // Phase 9: state for `object merge-parts`. `merge_filament` has no
+    // "unset" sentinel -- we use CLI11's `count("--filament") > 0` in
+    // the callback to distinguish "user passed --filament" from "user
+    // did not pass --filament". This way `--filament 0` reaches the
+    // range-check correctly (and is rejected as out-of-range) instead
+    // of being silently swallowed as "no override".
     static std::string merge_file, merge_name, merge_parts, merge_into;
-    static int         merge_filament = 0;  // 0 means "unset"
+    static int         merge_filament = 0;
 ```
 
 After the existing `split` subcommand block (ends around line 322), add:
@@ -1675,12 +1698,12 @@ After the existing `split` subcommand block (ends around line 322), add:
         ->required();
     merge->add_option("--into", merge_into,
                       "name for the resulting merged volume")->required();
-    merge->add_option("--filament", merge_filament,
+    auto* merge_filament_opt = merge->add_option("--filament", merge_filament,
                       "explicit filament slot to assign to the merged volume "
                       "(1-based); required when sources have differing extruders");
     merge->add_option("--output", g.output,
                       "write result to this path instead of overwriting input");
-    merge->callback([&g]() {
+    merge->callback([&g, merge_filament_opt]() {
         // Section 3 precedence step 1: parse-level validation (usage_error).
         if (merge_into.empty()) {
             print_err(g, ExitCode::usage_error,
@@ -1724,8 +1747,14 @@ After the existing `split` subcommand block (ends around line 322), add:
             }
         }
 
+        // Distinguish "user passed --filament" from "user did not pass it"
+        // via CLI11's count(); avoids the `int == 0` sentinel ambiguity
+        // (--filament 0 must reach the range check and be rejected, not
+        // silently treated as "no override").
         std::optional<int> filament_override;
-        if (merge_filament != 0) filament_override = merge_filament;
+        if (merge_filament_opt->count() > 0) {
+            filament_override = merge_filament;
+        }
 
         MutationExceptionMap em;
         em.on<DuplicateNameError>(ExitCode::duplicate_name)
