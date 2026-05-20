@@ -19,6 +19,8 @@
 #include "../output.hpp"
 #include "../project_ops.hpp"
 
+#include <nlohmann/json.hpp>
+
 #include <libslic3r/Model.hpp>
 #include <libslic3r/PrintConfig.hpp>
 
@@ -163,21 +165,15 @@ int do_config_list(const GlobalOpts& g,
     }
 
     if (g.json) {
-        // Emit a JSON `keys` array inside the data object that print_ok
-        // wraps. Escape both key and value so a config value containing
-        // quotes / backslashes can't break the surrounding object.
-        std::string keys_json = "\"keys\":[";
-        bool first = true;
+        nlohmann::json data;
+        auto& arr = data["keys"] = nlohmann::json::array();
         for (const auto& r : rows) {
-            if (!first) keys_json += ",";
-            first = false;
-            keys_json += "{\"key\":\""   + escape_json(r.key)   + "\""
-                       + ",\"value\":\"" + escape_json(r.value) + "\"}";
+            arr.push_back({
+                {"key",   r.key},
+                {"value", r.value},
+            });
         }
-        keys_json += "]";
-        print_ok(g,
-                 "listed " + std::to_string(rows.size()) + " config keys",
-                 keys_json);
+        print_ok(g, "listed " + std::to_string(rows.size()) + " config keys", data);
     } else {
         for (const auto& r : rows) {
             const std::string line = r.key + " = " + r.value + "\n";

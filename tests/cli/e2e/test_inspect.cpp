@@ -1,6 +1,8 @@
 #include <catch2/catch_all.hpp>
 #include "../test_common.hpp"
 
+#include <nlohmann/json.hpp>
+
 #include <boost/filesystem.hpp>
 #include <string>
 
@@ -32,11 +34,13 @@ TEST_CASE("orca-cli: inspect --json emits structured output",
     auto r = run_cli({"--json", "inspect", in.string()});
     INFO("stdout: " << r.stdout_ << "\nstderr: " << r.stderr_);
     REQUIRE(r.exit_code == 0);
-    REQUIRE(r.stdout_.find("\"plate_count\":") != std::string::npos);
-    REQUIRE(r.stdout_.find("\"filament_count\":") != std::string::npos);
-    REQUIRE(r.stdout_.find("\"plates\":") != std::string::npos);
-    REQUIRE(r.stdout_.find("\"objects\":") != std::string::npos);
-    REQUIRE(r.stdout_.find("\"project_changed\":") != std::string::npos);
+    auto j = nlohmann::json::parse(r.stdout_);
+    REQUIRE(j["status"] == "ok");
+    REQUIRE(j["data"]["plate_count"].is_number_integer());
+    REQUIRE(j["data"]["filament_count"].is_number_integer());
+    REQUIRE(j["data"]["plates"].is_array());
+    REQUIRE(j["data"]["objects"].is_array());
+    REQUIRE(j["data"]["project_changed"].is_array());
 }
 
 TEST_CASE("orca-cli: inspect rejects --output with usage_error",
@@ -82,7 +86,26 @@ TEST_CASE("orca-cli: inspect reflects plate add + object add + config set mutati
     auto r = run_cli({"--json", "inspect", in.string()});
     INFO("stdout: " << r.stdout_ << "\nstderr: " << r.stderr_);
     REQUIRE(r.exit_code == 0);
-    REQUIRE(r.stdout_.find("Inspectable") != std::string::npos);
-    REQUIRE(r.stdout_.find("\"name\":\"ic\"") != std::string::npos);
-    REQUIRE(r.stdout_.find("wall_loops") != std::string::npos);
+    auto j = nlohmann::json::parse(r.stdout_);
+    REQUIRE(j["status"] == "ok");
+    // Verify the added plate appears in the plates array.
+    bool found_plate = false;
+    for (const auto& p : j["data"]["plates"]) {
+        if (p["name"] == "Inspectable") { found_plate = true; break; }
+    }
+    REQUIRE(found_plate);
+    // Verify the added object appears in the objects array with its config key.
+    bool found_obj = false;
+    for (const auto& obj : j["data"]["objects"]) {
+        if (obj["name"] == "ic") {
+            found_obj = true;
+            bool found_key = false;
+            for (const auto& k : obj["config_keys"]) {
+                if (k == "wall_loops") { found_key = true; break; }
+            }
+            REQUIRE(found_key);
+            break;
+        }
+    }
+    REQUIRE(found_obj);
 }

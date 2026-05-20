@@ -36,6 +36,7 @@ target_link_libraries(cli_tests PRIVATE
     libslic3r
     Boost::filesystem
     Boost::system
+    nlohmann_json
 )
 
 add_dependencies(cli_tests orca-cli)

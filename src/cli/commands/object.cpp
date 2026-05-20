@@ -12,6 +12,8 @@
 #include "../output.hpp"
 #include "../project_ops.hpp"
 
+#include <nlohmann/json.hpp>
+
 #include <boost/filesystem.hpp>
 
 #include <cstdio>
@@ -181,18 +183,15 @@ int do_object_list(const GlobalOpts& g, const std::string& file)
     }
 
     if (g.json) {
-        std::string objs_json = "\"objects\":[";
-        bool first = true;
+        nlohmann::json data;
+        auto& arr = data["objects"] = nlohmann::json::array();
         for (const auto& r : rows) {
-            if (!first) objs_json += ",";
-            first = false;
-            objs_json += "{\"name\":\""  + escape_json(r.object) + "\""
-                      +  ",\"plate\":\"" + escape_json(r.plate)  + "\"}";
+            arr.push_back({
+                {"name",  r.object},
+                {"plate", r.plate},
+            });
         }
-        objs_json += "]";
-        print_ok(g,
-                 "listed " + std::to_string(rows.size()) + " objects",
-                 objs_json);
+        print_ok(g, "listed " + std::to_string(rows.size()) + " objects", data);
     } else {
         for (const auto& r : rows) {
             std::string line = "object: " + r.object

@@ -1,4 +1,5 @@
 #include "output.hpp"
+#include <nlohmann/json.hpp>
 #include <cstdio>
 #include <string>
 
@@ -21,37 +22,35 @@ const char* code_name(ExitCode c)
     return "unknown";
 }
 
-std::string escape_json(std::string_view s)
+std::string build_ok_envelope(std::string_view message, const nlohmann::json& data)
 {
-    std::string out;
-    out.reserve(s.size() + 2);
-    for (char ch : s) {
-        switch (ch) {
-            case '"':  out += "\\\""; break;
-            case '\\': out += "\\\\"; break;
-            case '\n': out += "\\n";  break;
-            case '\r': out += "\\r";  break;
-            case '\t': out += "\\t";  break;
-            default:
-                if (static_cast<unsigned char>(ch) < 0x20) {
-                    char buf[8];
-                    std::snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned char>(ch));
-                    out += buf;
-                } else {
-                    out += ch;
-                }
-        }
-    }
-    return out;
+    nlohmann::json j;
+    j["status"]  = "ok";
+    j["code"]    = "ok";
+    j["message"] = std::string(message);
+    if (!data.is_null() && !data.empty()) j["data"] = data;
+    return j.dump();
 }
 
-void print_ok(const GlobalOpts& opts, std::string_view message, std::string_view data_json)
+std::string build_err_envelope(ExitCode code, std::string_view message)
+{
+    nlohmann::json j;
+    j["status"]  = "err";
+    j["code"]    = code_name(code);
+    j["message"] = std::string(message);
+    return j.dump();
+}
+
+void print_ok(const GlobalOpts& opts, std::string_view message)
+{
+    print_ok(opts, message, nlohmann::json::object());
+}
+
+void print_ok(const GlobalOpts& opts, std::string_view message, const nlohmann::json& data)
 {
     if (opts.json) {
-        std::string body = "{\"status\":\"ok\",\"code\":\"ok\",\"message\":\"" + escape_json(message) + "\"";
-        if (!data_json.empty())
-            body += ",\"data\":{" + std::string(data_json) + "}";
-        body += "}\n";
+        std::string body = build_ok_envelope(message, data);
+        body.push_back('\n');
         std::fputs(body.c_str(), stdout);
     } else {
         std::fputs("ok: ", stdout);
@@ -64,8 +63,8 @@ void print_ok(const GlobalOpts& opts, std::string_view message, std::string_view
 void print_err(const GlobalOpts& opts, ExitCode code, std::string_view message)
 {
     if (opts.json) {
-        std::string body = std::string("{\"status\":\"err\",\"code\":\"") + code_name(code)
-                         + "\",\"message\":\"" + escape_json(message) + "\"}\n";
+        std::string body = build_err_envelope(code, message);
+        body.push_back('\n');
         std::fputs(body.c_str(), stdout);
     } else {
         std::fputs("err: ", stderr);

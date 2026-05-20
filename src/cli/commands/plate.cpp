@@ -7,6 +7,8 @@
 #include "../output.hpp"
 #include "../project_ops.hpp"
 
+#include <nlohmann/json.hpp>
+
 #include <boost/filesystem.hpp>
 #include <boost/system/error_code.hpp>
 
@@ -54,24 +56,16 @@ int do_plate_list(const GlobalOpts& g, const std::string& input)
     }
 
     if (g.json) {
-        // Build a JSON `plates` array inside the data object that print_ok
-        // wraps. print_ok's data_json parameter is the inside of the data
-        // object, so we emit `"plates":[{...}, ...]`.
-        std::string plates_json = "\"plates\":[";
-        bool first = true;
+        nlohmann::json data;
+        auto& arr = data["plates"] = nlohmann::json::array();
         for (size_t i = 0; i < state.plates.size(); ++i) {
-            if (!first) plates_json += ",";
-            first = false;
-            plates_json += "{\"index\":" + std::to_string(i + 1)
-                        + ",\"name\":\""  + escape_json(state.plates[i]->plate_name) + "\""
-                        + ",\"object_count\":"
-                        + std::to_string(state.plates[i]->objects_and_instances.size())
-                        + "}";
+            arr.push_back({
+                {"index",        int(i + 1)},
+                {"name",         state.plates[i]->plate_name},
+                {"object_count", int(state.plates[i]->objects_and_instances.size())},
+            });
         }
-        plates_json += "]";
-        print_ok(g,
-                 "listed " + std::to_string(state.plates.size()) + " plates",
-                 plates_json);
+        print_ok(g, "listed " + std::to_string(state.plates.size()) + " plates", data);
     } else {
         for (size_t i = 0; i < state.plates.size(); ++i) {
             // 1-based on display to match on-disk plate_N.png naming.

@@ -12,13 +12,14 @@
 #include "../output.hpp"
 #include "../project_ops.hpp"
 
+#include <nlohmann/json.hpp>
+
 #include <libslic3r/Model.hpp>
 #include <libslic3r/Format/bbs_3mf.hpp>
 
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
-#include <sstream>
 #include <string>
 #include <vector>
 
@@ -62,56 +63,41 @@ int do_inspect(const GlobalOpts& g, const std::string& file)
     }
 
     if (g.json) {
-        // Emit the structured report inside print_ok's `data` object.
-        // print_ok wraps `{...}` around the string we hand it, so we
-        // contribute the inner key:value pairs only.
-        std::ostringstream js;
-        js << "\"plate_count\":"    << plate_count
-           << ",\"filament_count\":" << filament_count;
+        nlohmann::json data;
+        data["plate_count"]    = plate_count;
+        data["filament_count"] = filament_count;
 
-        js << ",\"plates\":[";
+        auto& plates_arr = data["plates"] = nlohmann::json::array();
         for (size_t i = 0; i < state.plates.size(); ++i) {
-            if (i) js << ",";
             const auto& pd = state.plates[i];
-            js << "{\"index\":" << (i + 1)
-               << ",\"name\":\"" << escape_json(pd->plate_name) << "\""
-               << ",\"objects\":[";
-            bool first = true;
+            nlohmann::json plate_obj;
+            plate_obj["index"] = int(i + 1);
+            plate_obj["name"]  = pd->plate_name;
+            auto& objs_arr = plate_obj["objects"] = nlohmann::json::array();
             for (const auto& kv : pd->objects_and_instances) {
                 const int oi = kv.first;
                 if (oi < 0 || oi >= int(state.model->objects.size()))
                     continue; // defensive: stale obj_idx
-                if (!first) js << ",";
-                first = false;
-                js << "\"" << escape_json(state.model->objects[oi]->name) << "\"";
+                objs_arr.push_back(state.model->objects[oi]->name);
             }
-            js << "]}";
+            plates_arr.push_back(std::move(plate_obj));
         }
-        js << "]";
 
-        js << ",\"project_changed\":[";
-        for (size_t i = 0; i < project_changed.size(); ++i) {
-            if (i) js << ",";
-            js << "\"" << escape_json(project_changed[i]) << "\"";
+        auto& changed_arr = data["project_changed"] = nlohmann::json::array();
+        for (const auto& k : project_changed)
+            changed_arr.push_back(k);
+
+        auto& objs_arr = data["objects"] = nlohmann::json::array();
+        for (const auto* obj : state.model->objects) {
+            nlohmann::json obj_entry;
+            obj_entry["name"] = obj->name;
+            auto& cfg_keys = obj_entry["config_keys"] = nlohmann::json::array();
+            for (const auto& k : obj->config.keys())
+                cfg_keys.push_back(k);
+            objs_arr.push_back(std::move(obj_entry));
         }
-        js << "]";
 
-        js << ",\"objects\":[";
-        for (size_t i = 0; i < state.model->objects.size(); ++i) {
-            if (i) js << ",";
-            const auto* obj = state.model->objects[i];
-            const auto keys = obj->config.keys();
-            js << "{\"name\":\"" << escape_json(obj->name) << "\""
-               << ",\"config_keys\":[";
-            for (size_t k = 0; k < keys.size(); ++k) {
-                if (k) js << ",";
-                js << "\"" << escape_json(keys[k]) << "\"";
-            }
-            js << "]}";
-        }
-        js << "]";
-
-        print_ok(g, "inspected " + file, js.str());
+        print_ok(g, "inspected " + file, data);
     } else {
         // Human mode -- one line per fact, indented to make the
         // per-plate / per-object grouping visible at a glance.

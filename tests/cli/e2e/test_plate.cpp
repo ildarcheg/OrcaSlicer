@@ -4,6 +4,8 @@
 #include "io.hpp"
 #include "project_ops.hpp"
 
+#include <nlohmann/json.hpp>
+
 #include <boost/filesystem.hpp>
 #include <string>
 
@@ -110,17 +112,21 @@ TEST_CASE("orca-cli: plate list prints plate count",
     REQUIRE(r.stdout_.find("plate") != std::string::npos);
 }
 
-TEST_CASE("orca-cli: plate list --json escapes plate names with special characters", "[orca-cli][P2][e2e]") {
+TEST_CASE("orca-cli: plate list --json round-trips plate names with special characters", "[orca-cli][P2][e2e]") {
     if (ref_3mf().empty()) { SUCCEED("Skipped"); return; }
     auto tmp = make_temp_dir();
     auto in  = copy_ref_to_temp(tmp, "plate-list-json-escape");
     // Plate name with a double-quote and a backslash.
-    REQUIRE(run_cli({"plate","add",in.string(),"--name","Tricky\"Name\\Here"}).exit_code == 0);
+    const std::string tricky = "Tricky\"Name\\Here";
+    REQUIRE(run_cli({"plate","add",in.string(),"--name",tricky}).exit_code == 0);
     auto r = run_cli({"--json","plate","list",in.string()});
     REQUIRE(r.exit_code == 0);
-    // The output must contain the properly-escaped sequence:
-    // "Tricky\"Name\\Here"  (each backslash literally doubled in source)
-    REQUIRE(r.stdout_.find("Tricky\\\"Name\\\\Here") != std::string::npos);
-    // And must NOT contain the unescaped literal.
-    REQUIRE(r.stdout_.find("\"Tricky\"Name\\Here\"") == std::string::npos);
+    // Parse the JSON and verify the plate name round-trips correctly.
+    auto j = nlohmann::json::parse(r.stdout_);
+    REQUIRE(j["status"] == "ok");
+    bool found = false;
+    for (const auto& p : j["data"]["plates"]) {
+        if (p["name"] == tricky) { found = true; break; }
+    }
+    REQUIRE(found);
 }

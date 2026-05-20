@@ -4,6 +4,8 @@
 #include "io.hpp"
 #include "project_ops.hpp"
 
+#include <nlohmann/json.hpp>
+
 #include <boost/filesystem.hpp>
 #include <string>
 
@@ -553,7 +555,15 @@ TEST_CASE("orca-cli: object list reports the plate name for objects on plates", 
 
     auto r = run_cli({"--json","object","list",in.string()});
     REQUIRE(r.exit_code == 0);
-    // The JSON output must contain the plate name for the added object.
     INFO(r.stdout_);
-    REQUIRE(r.stdout_.find("\"name\":\"listobj\",\"plate\":\"Listed\"") != std::string::npos);
+    auto j = nlohmann::json::parse(r.stdout_);
+    REQUIRE(j["status"] == "ok");
+    bool found_obj = false;
+    for (const auto& obj : j["data"]["objects"]) {
+        if (obj["name"] == "listobj" && obj["plate"] == "Listed") {
+            found_obj = true;
+            break;
+        }
+    }
+    REQUIRE(found_obj);
 }

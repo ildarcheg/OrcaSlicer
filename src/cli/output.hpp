@@ -1,7 +1,8 @@
 #pragma once
+#include "globals.hpp"
+#include <nlohmann/json_fwd.hpp>
 #include <string>
 #include <string_view>
-#include "globals.hpp"
 
 namespace orca_cli {
 
@@ -20,10 +21,13 @@ enum class ExitCode : int {
 
 const char* code_name(ExitCode c);
 
-void print_ok (const GlobalOpts& opts, std::string_view message, std::string_view data_json = {});
-void print_err(const GlobalOpts& opts, ExitCode code, std::string_view message);
+// Test-friendly envelope builders (no I/O). The body is a single line of
+// dump()-formatted JSON; callers append '\n' before fputs.
+std::string build_ok_envelope(std::string_view message, const nlohmann::json& data);
+std::string build_err_envelope(ExitCode code, std::string_view message);
 
-// Escapes a string for safe embedding inside a JSON value.
-std::string escape_json(std::string_view s);
+void print_ok(const GlobalOpts& opts, std::string_view message);
+void print_ok(const GlobalOpts& opts, std::string_view message, const nlohmann::json& data);
+void print_err(const GlobalOpts& opts, ExitCode code, std::string_view message);
 
 } // namespace orca_cli

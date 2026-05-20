@@ -32,6 +32,7 @@ target_link_libraries(orca_cli_core PUBLIC
     Boost::filesystem
     Boost::system
     Boost::thread
+    nlohmann_json
 )
 
 if (WIN32)
