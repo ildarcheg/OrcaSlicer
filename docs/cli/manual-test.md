@@ -244,6 +244,7 @@ Remove-Item $OUT -Force -ErrorAction SilentlyContinue
 & $CLI object add $OUT --plate "Brackets" --stl "$STLS\box_with_text.stl" --name multi
 & $CLI object split-to-parts $OUT --name multi
 & $CLI object set-filament $OUT --name multi --part multi_1 --filament 1
+& $CLI object merge-parts $OUT --name multi --parts multi_1,multi_2 --into multi_combo --filament 1
 & $CLI inspect      $OUT
 & $CLI --json inspect $OUT     # structured form; pipe through ConvertFrom-Json for browsing
 ```
@@ -316,4 +317,54 @@ Anti-cases (each should exit non-zero):
 Manual GUI smoke: open `$OUT` in OrcaSlicer; the `multipart` object
 should appear as a single object with N parts visible in the object
 panel, each part assigned to its respective filament slot.
+
+## Phase 9 - `object merge-parts`
+
+Inverse of Phase 8's split-to-parts. Requires `box_with_text.stl` in
+`$STLS` (copy from `C:\Users\ildarcheg\Documents\GitHub\` once per
+session) for the realistic recipe.
+
+```powershell
+$OUT = "$env:TEMP\orca-cli-p9.3mf"
+Copy-Item $REF $OUT -Force
+# Add a fresh plate so the recipe doesn't depend on whatever plates the
+# reference 3mf carries. The Phase 8 recipes do the same.
+& $CLI plate add $OUT --name MergePlate
+& $CLI object add $OUT --plate "MergePlate" --stl "$STLS\box_with_text.stl" --name multipart
+& $CLI object split-to-parts $OUT --name multipart                # N parts
+& $CLI object set-filament $OUT --name multipart --part multipart_1 --filament 1
+& $CLI object set-filament $OUT --name multipart --part multipart_2 --filament 2
+# Merge two parts back together with an explicit filament:
+& $CLI object merge-parts $OUT --name multipart `
+    --parts multipart_1,multipart_2 --into multipart_combo --filament 1
+& $CLI --json inspect $OUT | ConvertFrom-Json | ConvertTo-Json -Depth 5
+```
+
+Expected: `multipart` has N-1 volumes. The merged `multipart_combo`
+volume occupies the slot where `multipart_1` used to be (lowest existing
+index of the two sources). The remaining non-merged parts retain their
+filament assignments.
+
+Anti-cases (each should exit non-zero):
+```powershell
+& $CLI object merge-parts $OUT --name multipart `
+    --parts multipart_combo --into x
+# expected: exit 1 (usage_error -- requires >=2 source parts)
+
+& $CLI object merge-parts $OUT --name multipart `
+    --parts multipart_3,nope --into x
+# expected: exit 6 (unknown_reference -- 'nope' not on object)
+
+& $CLI object merge-parts $OUT --name multipart `
+    --parts multipart_3,multipart_4 --into multipart_combo
+# expected: exit 5 (duplicate_name -- collides with non-source)
+
+& $CLI object merge-parts $OUT --name multipart `
+    --parts multipart_3,multipart_4 --into x --filament 9999
+# expected: exit 6 (unknown_reference -- slot out of range)
+```
+
+Manual GUI smoke: open `$OUT` in OrcaSlicer; the `multipart` object
+should appear with N-1 parts in the object panel, with the merged
+`multipart_combo` carrying the explicit filament.
 

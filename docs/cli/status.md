@@ -414,3 +414,33 @@ contract against OrcaSlicer's constant. Test count moved from 123 to
   inspect --json confirms) opened in OrcaSlicer and visually verified
   on 2026-05-20. Four anti-cases also confirmed live (exit 7 / 6
   with the right error messages).
+
+## Phase 9 - object merge-parts
+
+- [x] `merge_object_parts` in `project_ops.cpp` implements Section 3's
+  8-step validation precedence (parse / lookup / collision / filament
+  range / MODEL_PART / empty-mesh / filament agreement / per-vol config
+  strict rule), bakes each source's `get_matrix()` into a single
+  `TriangleMesh::merge`, places the result at the LOWEST-EXISTING-INDEX
+  source's slot, and stamps source attribution from the same anchor.
+  Does NOT call libslic3r's `ModelObject::merge_volumes` (three confirmed
+  bugs documented in spec Section 2).
+- [x] New typed exception `DuplicateNameError` (case 8 -> exit 5,
+  duplicate_name). All other refusals reuse `std::invalid_argument`
+  (default -> invalid_state, exit 7) or `std::out_of_range` (default ->
+  unknown_reference, exit 6).
+- [x] `orca-cli object merge-parts <file> --name X --parts ... --into Y
+  [--filament N] [--output O]` end-to-end via the standard load-mutate-
+  save flow + `MutationExceptionMap`.
+- [x] `inspect --json`: pre-existing `volumes` array from Phase 8 reports
+  the merged volume; volume count drops by N-1 (for an N-source merge).
+- [x] Bug C lock-in: merged volume's `source.input_file` matches the
+  lowest-existing-index source's attribution, exercised with both the
+  dominant post-split shared-input case and the distinct-attribution
+  hand-authored case (unit test #13).
+- [x] All P0-P8 tests still pass (regression). Merge adds 32 new tests
+  (19 unit + 12 e2e + 1 roundtrip).
+- [ ] Manual GUI smoke: open the P9 manual-test output in OrcaSlicer and
+  verify the merged object renders as one ModelVolume per part vector
+  entry, with the merged part carrying the assigned filament. (Pending
+  separate manual verification.)
