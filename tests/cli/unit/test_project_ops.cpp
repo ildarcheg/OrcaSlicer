@@ -1363,3 +1363,85 @@ TEST_CASE("merge_object_parts places merged volume at LOWEST-EXISTING-INDEX "
     REQUIRE(obj2->volumes[0]->name == std::string("M"));
     REQUIRE(obj2->volumes[1]->name == std::string("merge_order_4"));
 }
+
+TEST_CASE("merge_object_parts: merged source.input_file matches "
+          "LOWEST-EXISTING-INDEX source's attribution (Bug C lock-in, "
+          "test #13)",
+          "[orca-cli][merge][unit][source-attribution]") {
+    namespace fs = boost::filesystem;
+    using namespace orca_cli;
+    using namespace Slic3r;
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped: no reference 3mf"); return; }
+    auto s = load_project(orca_cli_test::ref_3mf().string());
+    AddObjectParams p;
+    p.plate_name  = s.plates.front()->plate_name;
+    p.stl_path    = (fs::path(ORCA_CLI_FIXTURES_DIR) / "two_cubes.stl").string();
+    p.object_name = "merge_src";
+    p.count       = 1;
+    REQUIRE_NOTHROW(add_object(s, p));
+    REQUIRE_NOTHROW(split_object_to_parts(s, "merge_src"));
+
+    // Add a third volume by hand-construction so we have 3 sources
+    // with DISTINCT attributions (simulating a hand-authored multi-
+    // volume object, the only case where attribution actually
+    // diverges across sources).
+    ModelObject* obj = find_object(s, "merge_src");
+    REQUIRE(obj != nullptr);
+    REQUIRE(obj->volumes.size() == 2);
+    // Set source.input_file for each split-derived volume to a distinct
+    // simulated path so the "all sources from one split share input_file"
+    // dominant-case shortcut doesn't apply.
+    obj->volumes[0]->source.input_file = "/sim/a.stl";
+    obj->volumes[0]->name = "A";
+    obj->volumes[1]->source.input_file = "/sim/b.stl";
+    obj->volumes[1]->name = "B";
+    // Add a third volume by cloning volume 0's mesh.
+    TriangleMesh m(obj->volumes[0]->mesh());
+    ModelVolume* vc = obj->add_volume(m, /*modify_to_center_geometry=*/false);
+    vc->name = "C";
+    vc->source.input_file = "/sim/c.stl";
+
+    // Merge {C, A, B} (non-monotonic). Anchor is A (lowest index = 0).
+    REQUIRE_NOTHROW(merge_object_parts(s, "merge_src",
+        {"C", "A", "B"}, "merged", std::nullopt));
+
+    auto* obj2 = find_object(s, "merge_src");
+    REQUIRE(obj2 != nullptr);
+    REQUIRE(obj2->volumes.size() == 1);
+    REQUIRE(obj2->volumes[0]->name == std::string("merged"));
+    INFO("merged source.input_file=" << obj2->volumes[0]->source.input_file);
+    REQUIRE(obj2->volumes[0]->source.input_file == std::string("/sim/a.stl"));
+}
+
+TEST_CASE("merge_object_parts: dominant post-split case keeps shared "
+          "input_file on merged volume (sub-assertion of test #13)",
+          "[orca-cli][merge][unit][source-attribution]") {
+    namespace fs = boost::filesystem;
+    using namespace orca_cli;
+    using namespace Slic3r;
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped: no reference 3mf"); return; }
+    auto s = load_project(orca_cli_test::ref_3mf().string());
+    AddObjectParams p;
+    p.plate_name  = s.plates.front()->plate_name;
+    p.stl_path    = (fs::path(ORCA_CLI_FIXTURES_DIR) / "two_cubes.stl").string();
+    p.object_name = "merge_src_shared";
+    p.count       = 1;
+    REQUIRE_NOTHROW(add_object(s, p));
+    REQUIRE_NOTHROW(split_object_to_parts(s, "merge_src_shared"));
+
+    auto* obj = find_object(s, "merge_src_shared");
+    REQUIRE(obj != nullptr);
+    REQUIRE(obj->volumes.size() == 2);
+    const std::string before = obj->volumes[0]->source.input_file;
+    REQUIRE_FALSE(before.empty());
+    REQUIRE(obj->volumes[1]->source.input_file == before);
+
+    REQUIRE_NOTHROW(merge_object_parts(s, "merge_src_shared",
+        {"merge_src_shared_1", "merge_src_shared_2"},
+        "merge_src_shared_main", std::nullopt));
+
+    auto* obj2 = find_object(s, "merge_src_shared");
+    REQUIRE(obj2 != nullptr);
+    REQUIRE(obj2->volumes.size() == 1);
+    REQUIRE(obj2->volumes[0]->source.input_file == before);
+}
