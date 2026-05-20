@@ -372,7 +372,7 @@ visible as grid-placed objects landing in the inter-plate gutter when
 multiple plates are present.
 
 Pre-existing defect from v2 P3, NOT introduced by the cleanup pass.
-Fixed in commit `489416bdb8` with the stride replaced by the
+Fixed in commit `01298884ce` with the stride replaced by the
 proportional form, plus a `[gui-compat]` regression test pinning the
 contract against OrcaSlicer's constant. Test count moved from 123 to
 124 cases.
