@@ -408,7 +408,9 @@ contract against OrcaSlicer's constant. Test count moved from 123 to
   behaviour.
 - [x] All P0-P7 tests still pass (regression). Test count moved from
   124 cases / 66046+ assertions to 148 cases.
-- [ ] Manual GUI smoke: open the P8 manual-test output in OrcaSlicer
-  and verify the multipart object shows N parts with their assigned
-  filament slots in the per-object panel. (Pending separate manual
-  verification.)
+- [x] Manual GUI smoke: cumulative P8 recipe (project init -> plate add
+  -> object add `box_with_text.stl` -> split-to-parts produces 7 parts
+  -> set-filament --part assigns multipart_1=1 and multipart_2=2 ->
+  inspect --json confirms) opened in OrcaSlicer and visually verified
+  on 2026-05-20. Four anti-cases also confirmed live (exit 7 / 6
+  with the right error messages).
