@@ -121,16 +121,22 @@ int do_object_add(const GlobalOpts& g, const AddObjectRawOpts& o)
 int do_object_set_filament(const GlobalOpts& g,
                            const std::string& file,
                            const std::string& name,
-                           int                slot)
+                           int                slot,
+                           const std::string& part)
 {
     // Both "object not found" and "slot out of range" surface as
     // std::out_of_range from set_object_filament; both map to
     // unknown_reference per the P5 plan. Default MutationExceptionMap
     // maps out_of_range -> unknown_reference, which is exactly what we need.
+    // "part not found" also throws std::out_of_range and maps the same way.
     MutationExceptionMap em;
-    return run_mutation(g, file,
-        "set filament " + std::to_string(slot) + " on object '" + name + "'", em,
-        [&](ProjectState& s) { set_object_filament(s, name, slot); });
+    std::optional<std::string> part_opt =
+        part.empty() ? std::nullopt : std::optional<std::string>(part);
+    std::string ok_msg = "set filament " + std::to_string(slot) +
+                         " on object '" + name + "'" +
+                         (part.empty() ? "" : (" part='" + part + "'"));
+    return run_mutation(g, file, ok_msg, em,
+        [&](ProjectState& s) { set_object_filament(s, name, slot, part_opt); });
 }
 
 int do_object_remove(const GlobalOpts& g,
@@ -214,7 +220,7 @@ void register_object_subcmd(CLI::App& app, GlobalOpts& g)
     static std::string rm_file,  rm_name;
     static std::string ls_file;
     // P5: state for `object set-filament`.
-    static std::string sf_file, sf_name;
+    static std::string sf_file, sf_name, sf_part;
     static int         sf_slot = 0;
     // Phase 8: state for `object split-to-parts`.
     static std::string split_file, split_name;
@@ -282,10 +288,12 @@ void register_object_subcmd(CLI::App& app, GlobalOpts& g)
     setf->add_option("--name",   sf_name, "object name to update")->required();
     setf->add_option("--filament", sf_slot,
                      "filament slot (1-based)")->required();
+    setf->add_option("--part", sf_part,
+                     "name of the volume (post-split part) to target; omit for object-level config");
     setf->add_option("--output", g.output,
                      "write result to this path instead of overwriting input");
     setf->callback([&g]() {
-        std::exit(do_object_set_filament(g, sf_file, sf_name, sf_slot));
+        std::exit(do_object_set_filament(g, sf_file, sf_name, sf_slot, sf_part));
     });
 
     // -- object split-to-parts (Phase 8) ----------------------------------
