@@ -1,4 +1,5 @@
 #include "plate.hpp"
+#include "mutation_runner.hpp"
 
 #include "../cli11/CLI11.hpp"
 #include "../io.hpp"
@@ -11,7 +12,6 @@
 
 #include <cstdlib>
 #include <exception>
-#include <stdexcept>
 #include <string>
 
 namespace orca_cli::commands {
@@ -20,98 +20,20 @@ namespace fs = boost::filesystem;
 
 namespace {
 
-// Map common mutation exceptions to CLI exit codes. Caller passes a
-// std::exception pointer (already caught) and we emit the appropriate
-// err line + return the int exit code. invariant_violation is handled
-// inline in run_mutation so it can also clean up partial state.
-int map_mutation_exception(const GlobalOpts& g, const std::exception& e)
-{
-    // We get here only on std::exception subclasses we did not catch
-    // specifically. The most useful classification we can do is via
-    // dynamic_cast: invalid_argument -> duplicate_name; out_of_range ->
-    // unknown_reference. Anything else maps to parse_failure (generic).
-    if (dynamic_cast<const std::invalid_argument*>(&e)) {
-        print_err(g, ExitCode::duplicate_name, e.what());
-        return int(ExitCode::duplicate_name);
-    }
-    if (dynamic_cast<const std::out_of_range*>(&e)) {
-        print_err(g, ExitCode::unknown_reference, e.what());
-        return int(ExitCode::unknown_reference);
-    }
-    print_err(g, ExitCode::parse_failure, e.what());
-    return int(ExitCode::parse_failure);
-}
-
-// Run a mutation on the project loaded from `input`, save to the resolved
-// target (input itself or --output), and emit print_ok on success. The
-// mutate callback gets a mutable ProjectState&. Any exception raised by
-// the callback is mapped to an exit code via map_mutation_exception (or,
-// for InvariantViolation, ExitCode::invariant_violation).
-template <typename Mutator>
-int run_mutation(const GlobalOpts&  g,
-                 const std::string& input,
-                 const std::string& ok_message,
-                 Mutator&&          mutate)
-{
-    if (int rc = check_input_exists(g, input); rc != int(ExitCode::ok))
-        return rc;
-
-    const std::string out = resolve_save_target(g, input);
-    try {
-        auto state = load_project(input);
-        mutate(state);
-        save_project(state, out);
-    } catch (const InvariantViolation& e) {
-        print_err(g, ExitCode::invariant_violation, e.what());
-        return int(ExitCode::invariant_violation);
-    } catch (const std::exception& e) {
-        return map_mutation_exception(g, e);
-    }
-
-    print_ok(g, ok_message);
-    return int(ExitCode::ok);
-}
-
-// Special-case `plate remove` mapping: remove_plate throws
-// invalid_argument on the "only plate" guard, which is invalid_state,
-// not duplicate_name. We can't disambiguate by exception type alone
-// without dedicated exception classes, so this command checks the
-// pre-condition before calling remove_plate to keep the mapping crisp.
+// `plate remove` maps invalid_argument to invalid_state (the "only plate"
+// guard), not to duplicate_name. We pass that via the exception map rather
+// than a hand-written catch chain.
 int do_plate_remove(const GlobalOpts& g, const std::string& input, const std::string& name)
 {
-    if (int rc = check_input_exists(g, input); rc != int(ExitCode::ok))
-        return rc;
-
-    const std::string out = resolve_save_target(g, input);
-    try {
-        auto state = load_project(input);
-        if (state.plates.size() <= 1) {
-            print_err(g, ExitCode::invalid_state, "cannot remove the only plate");
-            return int(ExitCode::invalid_state);
-        }
-        remove_plate(state, name);
-        save_project(state, out);
-    } catch (const InvariantViolation& e) {
-        print_err(g, ExitCode::invariant_violation, e.what());
-        return int(ExitCode::invariant_violation);
-    } catch (const std::out_of_range& e) {
-        print_err(g, ExitCode::unknown_reference, e.what());
-        return int(ExitCode::unknown_reference);
-    } catch (const std::invalid_argument& e) {
-        // remove_plate currently throws invalid_argument only on the
-        // "only plate" guard, which is pre-empted above. Map explicitly
-        // to invalid_state so a future helper throwing this type does
-        // not silently fall through to parse_failure.
-        print_err(g, ExitCode::invalid_state, e.what());
-        return int(ExitCode::invalid_state);
-    } catch (const std::exception& e) {
-        // Anything else (load/save failures) -> generic.
-        print_err(g, ExitCode::parse_failure, e.what());
-        return int(ExitCode::parse_failure);
-    }
-
-    print_ok(g, "removed plate '" + name + "'");
-    return int(ExitCode::ok);
+    MutationExceptionMap em;
+    em.set_default_invalid_argument(ExitCode::invalid_state)
+      .set_default_out_of_range(ExitCode::unknown_reference);
+    return run_mutation(g, input, "removed plate '" + name + "'", em,
+        [&name](ProjectState& s) {
+            if (s.plates.size() <= 1)
+                throw std::invalid_argument("cannot remove the only plate");
+            remove_plate(s, name);
+        });
 }
 
 int do_plate_list(const GlobalOpts& g, const std::string& input)
@@ -189,8 +111,9 @@ void register_plate_subcmd(CLI::App& app, GlobalOpts& g)
     add->add_option("--name", add_name, "name for the new plate")->required();
     add->add_option("--output", g.output, "write result to this path instead of overwriting input");
     add->callback([&g]() {
+        MutationExceptionMap em;
         std::exit(run_mutation(g, add_file,
-                               "added plate '" + add_name + "'",
+                               "added plate '" + add_name + "'", em,
                                [](ProjectState& s) { add_plate(s, add_name); }));
     });
 
@@ -210,8 +133,9 @@ void register_plate_subcmd(CLI::App& app, GlobalOpts& g)
     mv->add_option("--to",   mv_to,   "new plate name")->required();
     mv->add_option("--output", g.output, "write result to this path instead of overwriting input");
     mv->callback([&g]() {
+        MutationExceptionMap em;
         std::exit(run_mutation(g, mv_file,
-                               "renamed '" + mv_from + "' -> '" + mv_to + "'",
+                               "renamed '" + mv_from + "' -> '" + mv_to + "'", em,
                                [](ProjectState& s) { rename_plate(s, mv_from, mv_to); }));
     });
 

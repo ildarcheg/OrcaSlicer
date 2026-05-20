@@ -1,9 +1,9 @@
 // object.cpp -- `orca-cli object {add,remove,list}` subcommand wiring.
 // Mirrors the shape of commands/plate.cpp: per-subcommand option statics,
 // callbacks dispatching into project_ops mutations, exit-code mapping
-// via the standard exception -> ExitCode pattern. See the module-level
-// comment in src/cli/commands/plate.cpp for the rationale.
+// via MutationExceptionMap + run_mutation from mutation_runner.hpp.
 #include "object.hpp"
+#include "mutation_runner.hpp"
 #include "object_parse_vec3.hpp"
 
 #include "../cli11/CLI11.hpp"
@@ -18,7 +18,6 @@
 #include <cstdlib>
 #include <exception>
 #include <optional>
-#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -90,50 +89,31 @@ int do_object_add(const GlobalOpts& g, const AddObjectRawOpts& o)
         scale = r->values;
     }
 
-    const std::string out = resolve_save_target(g, o.file);
-    try {
-        auto state = load_project(o.file);
-        AddObjectParams p;
-        p.plate_name  = o.plate;
-        p.stl_path    = o.stl;
-        p.object_name = o.name;
-        p.count       = o.count;
-        p.translate   = translate;
-        p.rotate      = rotate;
-        p.scale       = scale;
-        // CLI11 stores filament_slot as a plain int with default 0; we
-        // treat 0 as "unset" because libslic3r's extruder index is 1-based
-        // (the GUI's filament panel labels start at 1, not 0). Anything
-        // else (negative or positive) is forwarded so the validation in
-        // set_object_filament reports the same error the user would see
-        // from `object set-filament`.
-        if (o.filament_slot != 0) p.filament_slot = o.filament_slot;
-        add_object(state, p);
-        save_project(state, out);
-    } catch (const PlacementFailure& e) {
-        // Off-bed -- spec § 4.3: exit 9 placement_failure.
-        print_err(g, ExitCode::placement_failure, e.what());
-        return int(ExitCode::placement_failure);
-    } catch (const InvariantViolation& e) {
-        print_err(g, ExitCode::invariant_violation, e.what());
-        return int(ExitCode::invariant_violation);
-    } catch (const std::out_of_range& e) {
-        // add_object throws this when the plate name is unknown.
-        print_err(g, ExitCode::unknown_reference, e.what());
-        return int(ExitCode::unknown_reference);
-    } catch (const std::invalid_argument& e) {
-        // Reserved for future duplicate-object-name guards. Map to the
-        // CLI's standard duplicate_name code for symmetry with `plate`.
-        print_err(g, ExitCode::duplicate_name, e.what());
-        return int(ExitCode::duplicate_name);
-    } catch (const std::exception& e) {
-        // STL load failure / save failure / etc.
-        print_err(g, ExitCode::parse_failure, e.what());
-        return int(ExitCode::parse_failure);
-    }
+    MutationExceptionMap em;
+    em.on<PlacementFailure>(ExitCode::placement_failure);
+    // invalid_argument default = duplicate_name (unchanged)
+    // out_of_range default = unknown_reference (unchanged)
 
-    print_ok(g, "added object from '" + o.stl + "' to plate '" + o.plate + "'");
-    return int(ExitCode::ok);
+    return run_mutation(g, o.file,
+        "added object from '" + o.stl + "' to plate '" + o.plate + "'", em,
+        [&](ProjectState& s) {
+            AddObjectParams p;
+            p.plate_name  = o.plate;
+            p.stl_path    = o.stl;
+            p.object_name = o.name;
+            p.count       = o.count;
+            p.translate   = translate;
+            p.rotate      = rotate;
+            p.scale       = scale;
+            // CLI11 stores filament_slot as a plain int with default 0; we
+            // treat 0 as "unset" because libslic3r's extruder index is 1-based
+            // (the GUI's filament panel labels start at 1, not 0). Anything
+            // else (negative or positive) is forwarded so the validation in
+            // set_object_filament reports the same error the user would see
+            // from `object set-filament`.
+            if (o.filament_slot != 0) p.filament_slot = o.filament_slot;
+            add_object(s, p);
+        });
 }
 
 int do_object_set_filament(const GlobalOpts& g,
@@ -141,57 +121,23 @@ int do_object_set_filament(const GlobalOpts& g,
                            const std::string& name,
                            int                slot)
 {
-    if (int rc = check_input_exists(g, file); rc != int(ExitCode::ok))
-        return rc;
-
-    const std::string out = resolve_save_target(g, file);
-    try {
-        auto state = load_project(file);
-        set_object_filament(state, name, slot);
-        save_project(state, out);
-    } catch (const InvariantViolation& e) {
-        print_err(g, ExitCode::invariant_violation, e.what());
-        return int(ExitCode::invariant_violation);
-    } catch (const std::out_of_range& e) {
-        // Both "object not found" and "slot out of range" surface as
-        // std::out_of_range from set_object_filament; both map to
-        // unknown_reference per the P5 plan.
-        print_err(g, ExitCode::unknown_reference, e.what());
-        return int(ExitCode::unknown_reference);
-    } catch (const std::exception& e) {
-        print_err(g, ExitCode::parse_failure, e.what());
-        return int(ExitCode::parse_failure);
-    }
-    print_ok(g, "set filament " + std::to_string(slot) +
-                " on object '" + name + "'");
-    return int(ExitCode::ok);
+    // Both "object not found" and "slot out of range" surface as
+    // std::out_of_range from set_object_filament; both map to
+    // unknown_reference per the P5 plan. Default MutationExceptionMap
+    // maps out_of_range -> unknown_reference, which is exactly what we need.
+    MutationExceptionMap em;
+    return run_mutation(g, file,
+        "set filament " + std::to_string(slot) + " on object '" + name + "'", em,
+        [&](ProjectState& s) { set_object_filament(s, name, slot); });
 }
 
 int do_object_remove(const GlobalOpts& g,
                      const std::string& file,
                      const std::string& name)
 {
-    if (int rc = check_input_exists(g, file); rc != int(ExitCode::ok))
-        return rc;
-
-    const std::string out = resolve_save_target(g, file);
-    try {
-        auto state = load_project(file);
-        remove_object(state, name);
-        save_project(state, out);
-    } catch (const InvariantViolation& e) {
-        print_err(g, ExitCode::invariant_violation, e.what());
-        return int(ExitCode::invariant_violation);
-    } catch (const std::out_of_range& e) {
-        print_err(g, ExitCode::unknown_reference, e.what());
-        return int(ExitCode::unknown_reference);
-    } catch (const std::exception& e) {
-        print_err(g, ExitCode::parse_failure, e.what());
-        return int(ExitCode::parse_failure);
-    }
-
-    print_ok(g, "removed object '" + name + "'");
-    return int(ExitCode::ok);
+    MutationExceptionMap em;
+    return run_mutation(g, file, "removed object '" + name + "'", em,
+        [&](ProjectState& s) { remove_object(s, name); });
 }
 
 int do_object_list(const GlobalOpts& g, const std::string& file)

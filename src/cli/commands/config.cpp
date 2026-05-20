@@ -1,17 +1,17 @@
 // config.cpp -- `orca-cli config {set,unset,list}` subcommand wiring.
 // Mirrors the shape of commands/plate.cpp and commands/object.cpp:
 // per-subcommand option statics, callbacks dispatching into project_ops
-// mutations, exit-code mapping via the standard exception -> ExitCode
-// chain.
+// mutations, exit-code mapping via MutationExceptionMap + run_mutation
+// from mutation_runner.hpp.
 //
-// The catch chain for `config set` / `config unset` is intentionally
-// different from the plate/object catch chains: it catches
-// BadConfigError BEFORE the generic std::exception fallback so an
-// unknown / malformed key maps to ExitCode::bad_config (exit 4) rather
-// than the generic parse_failure (exit 3). It also keeps
-// std::out_of_range -> unknown_reference (exit 6) for the per-object
-// "object not found" branch, matching commands/object.cpp's contract.
+// For `config set` / `config unset` the exception map registers
+// BadConfigError -> bad_config BEFORE the defaults so an unknown /
+// malformed key maps to ExitCode::bad_config (exit 4) rather than the
+// generic parse_failure (exit 3). BadConfigError extends
+// std::runtime_error (not invalid_argument or out_of_range), so the
+// MutationExceptionMap dispatch order already ensures it fires first.
 #include "config.hpp"
+#include "mutation_runner.hpp"
 
 #include "../cli11/CLI11.hpp"
 #include "../invariants.hpp"
@@ -25,7 +25,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
-#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -62,39 +61,18 @@ int do_config_set(const GlobalOpts& g,
                   const std::string& value,
                   const std::string& object_name)
 {
-    if (int rc = check_input_exists(g, file); rc != int(ExitCode::ok))
-        return rc;
-
-    const std::string out = resolve_save_target(g, file);
-    try {
-        auto state = load_project(file);
-        if (object_name.empty())
-            set_project_config(state, key, value);
-        else
-            set_object_config(state, object_name, key, value);
-        save_project(state, out);
-    } catch (const BadConfigError& e) {
-        print_err(g, ExitCode::bad_config, e.what());
-        return int(ExitCode::bad_config);
-    } catch (const InvariantViolation& e) {
-        print_err(g, ExitCode::invariant_violation, e.what());
-        return int(ExitCode::invariant_violation);
-    } catch (const std::out_of_range& e) {
-        // set_object_config throws this when the object name is unknown.
-        print_err(g, ExitCode::unknown_reference, e.what());
-        return int(ExitCode::unknown_reference);
-    } catch (const std::exception& e) {
-        // Load / save failures, etc. Fall through to the generic
-        // parse_failure bucket.
-        print_err(g, ExitCode::parse_failure, e.what());
-        return int(ExitCode::parse_failure);
-    }
-
+    MutationExceptionMap em;
+    em.on<BadConfigError>(ExitCode::bad_config);
+    // out_of_range default = unknown_reference (set_object_config throws this
+    // when the object name is unknown).
     const std::string msg = object_name.empty()
         ? ("set " + key + " = " + value)
         : ("set " + key + " = " + value + " on object '" + object_name + "'");
-    print_ok(g, msg);
-    return int(ExitCode::ok);
+    return run_mutation(g, file, msg, em,
+        [&](ProjectState& s) {
+            if (object_name.empty()) set_project_config(s, key, value);
+            else                     set_object_config(s, object_name, key, value);
+        });
 }
 
 // -- config unset ----------------------------------------------------------
@@ -104,36 +82,16 @@ int do_config_unset(const GlobalOpts& g,
                     const std::string& key,
                     const std::string& object_name)
 {
-    if (int rc = check_input_exists(g, file); rc != int(ExitCode::ok))
-        return rc;
-
-    const std::string out = resolve_save_target(g, file);
-    try {
-        auto state = load_project(file);
-        if (object_name.empty())
-            unset_project_config(state, key);
-        else
-            unset_object_config(state, object_name, key);
-        save_project(state, out);
-    } catch (const BadConfigError& e) {
-        print_err(g, ExitCode::bad_config, e.what());
-        return int(ExitCode::bad_config);
-    } catch (const InvariantViolation& e) {
-        print_err(g, ExitCode::invariant_violation, e.what());
-        return int(ExitCode::invariant_violation);
-    } catch (const std::out_of_range& e) {
-        print_err(g, ExitCode::unknown_reference, e.what());
-        return int(ExitCode::unknown_reference);
-    } catch (const std::exception& e) {
-        print_err(g, ExitCode::parse_failure, e.what());
-        return int(ExitCode::parse_failure);
-    }
-
+    MutationExceptionMap em;
+    em.on<BadConfigError>(ExitCode::bad_config);
     const std::string msg = object_name.empty()
         ? ("unset " + key)
         : ("unset " + key + " on object '" + object_name + "'");
-    print_ok(g, msg);
-    return int(ExitCode::ok);
+    return run_mutation(g, file, msg, em,
+        [&](ProjectState& s) {
+            if (object_name.empty()) unset_project_config(s, key);
+            else                     unset_object_config(s, object_name, key);
+        });
 }
 
 // -- config list -----------------------------------------------------------
