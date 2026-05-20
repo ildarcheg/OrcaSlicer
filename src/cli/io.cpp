@@ -47,21 +47,22 @@ bool is_orphan_plate_png(const std::string& name, int plate_count)
     return false;
 }
 
-// Phase 1: Open target zip, enumerate entries, identify orphan plate PNGs,
-// and extract all non-orphan blobs to memory. Closes the archive before
-// returning so no zip handle escapes this function.
+// Phase 1: Open target zip, enumerate entries, identify orphan plate PNGs.
+// Closes the archive before returning so no zip handle escapes this function.
 //
 // kept_names  — all non-directory entries that are not orphans; retained for
 //               to_synthesize planning.
 // orphan_names — plate-numbered PNGs whose trailing N exceeds plate_count;
 //                these are dropped so `plate remove` cleans up its PNGs.
-// blobs       — extracted (name, bytes) for every non-orphan entry.
 // opened      — false if the archive could not be opened (sentinel).
+//
+// Note: blobs are no longer extracted here. rewrite_archive_with_blobs opens
+// its own reader and uses mz_zip_writer_add_from_zip_reader for zero-copy
+// passthrough of carried-forward entries (T14).
 struct TargetEntryInfo {
-    std::unordered_set<std::string>                                  kept_names;
-    std::unordered_set<std::string>                                  orphan_names;
-    std::vector<std::pair<std::string, std::vector<unsigned char>>>  blobs;
-    bool                                                             opened = false;
+    std::unordered_set<std::string> kept_names;
+    std::unordered_set<std::string> orphan_names;
+    bool                            opened = false;
 };
 
 TargetEntryInfo enumerate_target_entries(const std::string& target_zip_path,
@@ -75,7 +76,6 @@ TargetEntryInfo enumerate_target_entries(const std::string& target_zip_path,
     info.opened = true;
     const mz_uint tgt_count = mz_zip_reader_get_num_files(&tgt_reader);
     info.kept_names.reserve(tgt_count);
-    info.blobs.reserve(tgt_count);
     for (mz_uint i = 0; i < tgt_count; ++i) {
         mz_zip_archive_file_stat st;
         if (!mz_zip_reader_file_stat(&tgt_reader, i, &st)) continue;
@@ -91,12 +91,7 @@ TargetEntryInfo enumerate_target_entries(const std::string& target_zip_path,
             info.orphan_names.insert(name);
             continue;
         }
-        // Extract the blob into memory so the archive can be closed below.
-        std::vector<unsigned char> bytes(static_cast<size_t>(st.m_uncomp_size));
-        if (!mz_zip_reader_extract_to_mem(&tgt_reader, i, bytes.data(), bytes.size(), 0))
-            continue;
         info.kept_names.insert(name);
-        info.blobs.emplace_back(std::move(name), std::move(bytes));
     }
     close_zip_reader(&tgt_reader);
     return info;
@@ -176,43 +171,69 @@ PassthroughPlan plan_thumbnail_passthrough(const ProjectState&    s,
     return plan;
 }
 
-// Phase 4: Write rewrite archive from pre-extracted blobs.
-// Opens the target archive internally to extract blobs, then writes the
-// rewrite archive (target blobs + plan.source_blobs + placeholder
-// injections), and closes both archives before returning.
+// Phase 4: Write rewrite archive using raw zip-to-zip copy for carried-forward
+// entries (T14: zero-recompress passthrough). Opens the target archive as a
+// reader here, then writes the rewrite archive (target blobs + plan.source_blobs
+// + placeholder injections), and closes both archives before returning.
 //
-// T14 will optimize the target-blob copy by using mz_zip_writer_add_from_zip_reader
-// (raw zip-to-zip, no in-memory extraction). That is a local change to this
-// function only and does not affect the helper contract.
-void rewrite_archive_with_blobs(const std::string&       rewrite_path,
+// mz_zip_writer_add_from_zip_reader copies raw deflated bytes from tgt_reader
+// to writer without decompressing or recompressing. For the ~99% of entries that
+// are unchanged on a typical save (mesh blobs, config blobs, untouched PNGs),
+// this eliminates both the extract and re-deflate passes. On the rare miniz
+// failure we fall back to a full decompress+recompress for that entry only.
+void rewrite_archive_with_blobs(const std::string&       target_zip_path,
+                                const std::string&       rewrite_path,
                                 const TargetEntryInfo&   target,
                                 const PassthroughPlan&   plan,
                                 const std::vector<char>& placeholder)
 {
-    // Rewrite the archive. Use the libslic3r helper so we honor the same
-    // UTF-8 path conventions store_bbs_3mf used.
+    mz_zip_archive tgt_reader{};
+    if (!open_zip_reader(&tgt_reader, target_zip_path)) return;
+
     mz_zip_archive writer{};
-    if (!open_zip_writer(&writer, rewrite_path))
+    if (!open_zip_writer(&writer, rewrite_path)) {
+        close_zip_reader(&tgt_reader);
         return;
-    for (const auto& kv : target.blobs) {
-        // PNG and config blobs are already compressed / small; use default
-        // compression to match what store_bbs_3mf does.
-        mz_zip_writer_add_mem(&writer, kv.first.c_str(),
-                              kv.second.data(), kv.second.size(),
-                              MZ_DEFAULT_COMPRESSION);
     }
+
+    // Carry forward every non-orphan entry as raw deflated bytes.
+    const mz_uint tgt_count = mz_zip_reader_get_num_files(&tgt_reader);
+    for (mz_uint i = 0; i < tgt_count; ++i) {
+        mz_zip_archive_file_stat st;
+        if (!mz_zip_reader_file_stat(&tgt_reader, i, &st)) continue;
+        if (st.m_is_directory) continue;
+        std::string name(st.m_filename);
+        std::replace(name.begin(), name.end(), '\\', '/');
+        if (target.orphan_names.count(name)) continue;
+        if (!mz_zip_writer_add_from_zip_reader(&writer, &tgt_reader, i)) {
+            // Fallback: decompress + recompress on the rare miniz failure.
+            std::vector<unsigned char> bytes(static_cast<size_t>(st.m_uncomp_size));
+            if (mz_zip_reader_extract_to_mem(&tgt_reader, i, bytes.data(), bytes.size(), 0)) {
+                mz_zip_writer_add_mem(&writer, name.c_str(), bytes.data(), bytes.size(),
+                                      MZ_DEFAULT_COMPRESSION);
+            }
+        }
+    }
+
+    // Source-copied blobs were already extracted to memory by
+    // plan_thumbnail_passthrough; write them as-is. PNG is already
+    // deflate-compressed, so MZ_NO_COMPRESSION avoids double-deflate.
     for (const auto& kv : plan.source_blobs) {
         mz_zip_writer_add_mem(&writer, kv.first.c_str(),
                               kv.second.data(), kv.second.size(),
-                              MZ_NO_COMPRESSION); // PNG is already compressed
+                              MZ_NO_COMPRESSION);
     }
+
+    // Synthesized placeholder PNGs (one buffer reused for every plate).
     for (const std::string& name : plan.to_synthesize) {
         mz_zip_writer_add_mem(&writer, name.c_str(),
                               placeholder.data(), placeholder.size(),
-                              MZ_NO_COMPRESSION); // PNG is already compressed
+                              MZ_NO_COMPRESSION);
     }
+
     mz_zip_writer_finalize_archive(&writer);
     close_zip_writer(&writer);
+    close_zip_reader(&tgt_reader);
 }
 
 // Phase 5 (swap): Atomic rename-swap: rename target -> .bak, rename
@@ -313,10 +334,10 @@ void passthrough_missing_thumbnails(const ProjectState& s,
     if (!plan.to_synthesize.empty())
         placeholder = make_placeholder_png_128_gray_C0();
 
-    // Phase 4: write rewrite archive from pre-extracted blobs — no zip
-    // handles flow to or from this function.
+    // Phase 4: write rewrite archive — tgt_reader opened internally, raw
+    // zip-to-zip copy for carried-forward entries, no zip handles escape.
     const std::string rewrite_path = target_zip_path + ".rewrite";
-    rewrite_archive_with_blobs(rewrite_path, target, plan, placeholder);
+    rewrite_archive_with_blobs(target_zip_path, rewrite_path, target, plan, placeholder);
     atomic_swap_rewrite(target_zip_path, rewrite_path);
 }
 
