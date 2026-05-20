@@ -186,3 +186,141 @@ TEST_CASE("end-to-end split + per-part filament assignment passes archive invari
 
     fs::remove_all(tmp);
 }
+
+TEST_CASE("object split-to-parts exits 7 on single-component object",
+          "[orca-cli][split][e2e]") {
+    if (ref_3mf().empty()) { SUCCEED("Skipped: reference 3mf not available"); return; }
+
+    const auto tmp = make_temp_dir();
+    const auto out = tmp / "single.3mf";
+    fs::copy_file(ref_3mf(), out);
+
+    auto add_plate_rc = run_cli({"plate", "add", out.string(), "--name", "SinglePlate"});
+    INFO("plate add stdout: " << add_plate_rc.stdout_ << "\nstderr: " << add_plate_rc.stderr_);
+    REQUIRE(add_plate_rc.exit_code == 0);
+
+    auto add_rc = run_cli({"object", "add", out.string(),
+        "--plate", "SinglePlate",
+        "--stl", (fs::path(ORCA_CLI_STL_DIR) / "000_01_test_cube.stl").string(),
+        "--name", "cube"});
+    INFO("object add stdout: " << add_rc.stdout_ << "\nstderr: " << add_rc.stderr_);
+    REQUIRE(add_rc.exit_code == 0);
+
+    auto rc = run_cli({"object", "split-to-parts", out.string(), "--name", "cube"});
+    INFO("split-to-parts stdout: " << rc.stdout_ << "\nstderr: " << rc.stderr_);
+    REQUIRE(rc.exit_code == 7);
+    REQUIRE(rc.stderr_.find("only 1 connected") != std::string::npos);
+
+    fs::remove_all(tmp);
+}
+
+TEST_CASE("object split-to-parts exits 7 on already-split object",
+          "[orca-cli][split][e2e]") {
+    if (ref_3mf().empty()) { SUCCEED("Skipped: reference 3mf not available"); return; }
+
+    const auto tmp = make_temp_dir();
+    const auto out = tmp / "double.3mf";
+    fs::copy_file(ref_3mf(), out);
+    const auto stl = fs::path(ORCA_CLI_FIXTURES_DIR) / "two_cubes.stl";
+    if (!fs::exists(stl)) { SUCCEED("Skipped: two_cubes.stl fixture not available"); return; }
+
+    auto add_plate_rc = run_cli({"plate", "add", out.string(), "--name", "SplitPlate"});
+    INFO("plate add stdout: " << add_plate_rc.stdout_ << "\nstderr: " << add_plate_rc.stderr_);
+    REQUIRE(add_plate_rc.exit_code == 0);
+
+    auto add_rc = run_cli({"object", "add", out.string(),
+        "--plate", "SplitPlate", "--stl", stl.string(), "--name", "x"});
+    INFO("object add stdout: " << add_rc.stdout_ << "\nstderr: " << add_rc.stderr_);
+    REQUIRE(add_rc.exit_code == 0);
+
+    auto split_rc = run_cli({"object", "split-to-parts", out.string(), "--name", "x"});
+    INFO("first split stdout: " << split_rc.stdout_ << "\nstderr: " << split_rc.stderr_);
+    REQUIRE(split_rc.exit_code == 0);
+
+    auto rc2 = run_cli({"object", "split-to-parts", out.string(), "--name", "x"});
+    INFO("second split stdout: " << rc2.stdout_ << "\nstderr: " << rc2.stderr_);
+    REQUIRE(rc2.exit_code == 7);
+    REQUIRE(rc2.stderr_.find("multiple volumes") != std::string::npos);
+
+    fs::remove_all(tmp);
+}
+
+TEST_CASE("object split-to-parts exits 6 on unknown object",
+          "[orca-cli][split][e2e]") {
+    if (ref_3mf().empty()) { SUCCEED("Skipped: reference 3mf not available"); return; }
+
+    const auto tmp = make_temp_dir();
+    const auto out = tmp / "unknown.3mf";
+    fs::copy_file(ref_3mf(), out);
+
+    auto rc = run_cli({"object", "split-to-parts", out.string(), "--name", "__nope__"});
+    INFO("split-to-parts stdout: " << rc.stdout_ << "\nstderr: " << rc.stderr_);
+    REQUIRE(rc.exit_code == 6);
+
+    fs::remove_all(tmp);
+}
+
+TEST_CASE("object set-filament --part exits 6 on unknown part name",
+          "[orca-cli][split][e2e]") {
+    if (ref_3mf().empty()) { SUCCEED("Skipped: reference 3mf not available"); return; }
+
+    const auto tmp = make_temp_dir();
+    const auto out = tmp / "unknown_part.3mf";
+    fs::copy_file(ref_3mf(), out);
+    const auto stl = fs::path(ORCA_CLI_FIXTURES_DIR) / "two_cubes.stl";
+    if (!fs::exists(stl)) { SUCCEED("Skipped: two_cubes.stl fixture not available"); return; }
+
+    auto add_plate_rc = run_cli({"plate", "add", out.string(), "--name", "SplitPlate"});
+    INFO("plate add stdout: " << add_plate_rc.stdout_ << "\nstderr: " << add_plate_rc.stderr_);
+    REQUIRE(add_plate_rc.exit_code == 0);
+
+    auto add_rc = run_cli({"object", "add", out.string(),
+        "--plate", "SplitPlate", "--stl", stl.string(), "--name", "p"});
+    INFO("object add stdout: " << add_rc.stdout_ << "\nstderr: " << add_rc.stderr_);
+    REQUIRE(add_rc.exit_code == 0);
+
+    auto split_rc = run_cli({"object", "split-to-parts", out.string(), "--name", "p"});
+    INFO("split stdout: " << split_rc.stdout_ << "\nstderr: " << split_rc.stderr_);
+    REQUIRE(split_rc.exit_code == 0);
+
+    auto rc = run_cli({"object", "set-filament", out.string(),
+        "--name", "p", "--part", "__nope__", "--filament", "2"});
+    INFO("set-filament stdout: " << rc.stdout_ << "\nstderr: " << rc.stderr_);
+    REQUIRE(rc.exit_code == 6);
+
+    fs::remove_all(tmp);
+}
+
+TEST_CASE("object split-to-parts --output writes only the side-car file",
+          "[orca-cli][split][e2e]") {
+    if (ref_3mf().empty()) { SUCCEED("Skipped: reference 3mf not available"); return; }
+
+    const auto tmp = make_temp_dir();
+    const auto in_ = tmp / "in.3mf";
+    const auto out = tmp / "out.3mf";
+    fs::copy_file(ref_3mf(), in_);
+    const auto stl = fs::path(ORCA_CLI_FIXTURES_DIR) / "two_cubes.stl";
+    if (!fs::exists(stl)) { SUCCEED("Skipped: two_cubes.stl fixture not available"); return; }
+
+    auto add_plate_rc = run_cli({"plate", "add", in_.string(), "--name", "SplitPlate"});
+    INFO("plate add stdout: " << add_plate_rc.stdout_ << "\nstderr: " << add_plate_rc.stderr_);
+    REQUIRE(add_plate_rc.exit_code == 0);
+
+    auto add_rc = run_cli({"object", "add", in_.string(),
+        "--plate", "SplitPlate", "--stl", stl.string(), "--name", "sc"});
+    INFO("object add stdout: " << add_rc.stdout_ << "\nstderr: " << add_rc.stderr_);
+    REQUIRE(add_rc.exit_code == 0);
+
+    const auto in_size_before = fs::file_size(in_);
+
+    auto split_rc = run_cli({"object", "split-to-parts", in_.string(),
+        "--name", "sc", "--output", out.string()});
+    INFO("split-to-parts stdout: " << split_rc.stdout_ << "\nstderr: " << split_rc.stderr_);
+    REQUIRE(split_rc.exit_code == 0);
+
+    REQUIRE(fs::exists(out));
+    // Input file must be byte-identical after --output side-car write.
+    REQUIRE(fs::file_size(in_) == in_size_before);
+
+    fs::remove_all(tmp);
+}
