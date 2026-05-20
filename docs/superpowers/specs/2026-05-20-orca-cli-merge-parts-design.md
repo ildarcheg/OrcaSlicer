@@ -81,14 +81,19 @@ Verbose-but-explicit style matching the rest of the orca-cli surface.
 
 **Answer: Smart default + `--filament N` override.**
 
-- If all source parts have the same effective extruder (whether per-volume
-  or inherited from object-level), the merged part inherits that filament.
-  No `--filament` flag needed in the common case.
-- If sources have different extruders AND `--filament N` is supplied:
-  merged part takes N.
-- If sources have different extruders AND `--filament` is missing: refuse
-  with `invalid_state` (exit 7) and a message instructing the user to
-  either unify filaments first via `set-filament` or pass `--filament N`.
+**Empty sources (dropped per Q7) are excluded from the agreement check** —
+their filament does not contribute to the "differing extruders"
+determination.
+
+- If all **non-empty** source parts have the same effective extruder
+  (whether per-volume or inherited from object-level), the merged part
+  inherits that filament. No `--filament` flag needed in the common case.
+- If non-empty sources have different extruders AND `--filament N` is
+  supplied: merged part takes N.
+- If non-empty sources have different extruders AND `--filament` is
+  missing: refuse with `invalid_state` (exit 7) and a message instructing
+  the user to either unify filaments first via `set-filament` or pass
+  `--filament N`.
 - Allowing `--filament N` when sources agree is allowed (explicit override).
 
 Range validation: same as `set-filament` — 1..`filament_slot_count`.
@@ -172,9 +177,11 @@ does today.
 ### Inspect interaction
 
 After merge, `inspect --json` reports the object's `volumes` array with the
-merged volume at the position of the FIRST source (libslic3r insertion-order
-semantics — the merged volume replaces the first source in place; the other
-sources are removed from the volumes vector).
+merged volume at the position of the source that had the **lowest existing
+index in `obj.volumes`** (libslic3r insertion-order semantics — the merged
+volume replaces the lowest-index source in place; the other sources are
+removed from the volumes vector). See Section 2 / "Source volume placement"
+for the rationale (stability under `--parts` argument reordering).
 
 Example before merge:
 ```
@@ -232,18 +239,37 @@ Set the merged volume's matrix to identity (`Geometry::Transformation()`).
 
 ### Source volume placement
 
-Insert the merged volume at the position of the FIRST source in
-`obj.volumes`. Erase all source volumes from the vector. This preserves
-inspect-output stability (the merged volume's index ≤ the indices of the
-sources it consumed).
+Insert the merged volume at the position of the source with the **lowest
+existing index in `obj.volumes`** — i.e. the source that currently sits
+earliest in the volumes vector, regardless of its position in the
+`--parts` argument. Erase all source volumes from the vector.
 
-### Per-volume non-extruder config
+Pinning placement to the lowest-existing-index source (not the
+first-listed source in `--parts`) makes `inspect --json` output stable
+under `--parts` argument reordering: scripts that look up the merged
+volume by array index won't break if a caller swaps `--parts X_1,X_3`
+for `--parts X_3,X_1`. The merged geometry is unaffected either way
+because the bake-in transform (above) reproduces each source's 3D
+position regardless of concat order.
 
-For each key encountered on any source's `ModelConfigObject`:
-- If all sources that carry the key agree on its value AND sources that
-  don't carry the key would inherit the same value from object-level
-  config, the merged volume inherits that value.
-- Otherwise refuse with `invalid_state` (exit 7), message listing keys.
+### Per-volume non-extruder config (strict rule)
+
+Empty sources (dropped per Q7) are excluded from the agreement check.
+
+For each per-volume key encountered on any non-empty source's
+`ModelConfigObject`:
+
+- If **all** non-empty sources carry the key with the **same value**, the
+  merged volume inherits that value.
+- If **none** of the non-empty sources carry the key (the object-level
+  value applies uniformly), the merged volume also does not carry the
+  key (object-level fallback remains in effect).
+- Otherwise — i.e. some sources carry the key and others don't, OR
+  carriers disagree on the value — refuse with `invalid_state` (exit 7).
+  The error message lists the conflicting key names plus a hint:
+
+  > "To merge, set the per-volume value on all source parts first via
+  > `config set --object X --part Y --key K --value V`, then retry."
 
 The `extruder` key is handled separately by Q4's smart default + override.
 
@@ -280,12 +306,34 @@ Call `obj.invalidate_bounding_box()` after the volume swap.
 | 6 | `--name X` ModelObject not found | 6 | `unknown_reference` |
 | 7 | `--filament N` out of range (not 1..filament_slot_count) | 6 | `unknown_reference` |
 | 8 | `--into` collides with a NON-source volume name | 5 | `duplicate_name` |
-| 9 | `--into` matches one of the SOURCE names | ALLOW | (source consumed, name reused) |
+| 9 | `--into` matches one of the SOURCE names | ALLOW | (source consumed, name reused; merged volume occupies the lowest-existing-index source's slot per Section 2) |
 | 10 | Sources have differing extruders AND `--filament` missing | 7 | `invalid_state` |
 | 11 | Any source volume is not `MODEL_PART` (modifier, support enforcer, etc.) | 7 | `invalid_state` |
 | 12 | All source meshes are empty | 7 | `invalid_state` ("all source parts have empty meshes") |
 | 13 | After dropping empty sources, <2 non-empty remain | 7 | `invalid_state` ("merge requires ≥2 non-empty source meshes") |
 | 14 | Per-volume non-extruder config keys diverge across sources | 7 | `invalid_state` (message lists conflicting keys) |
+
+### Validation order (deterministic precedence)
+
+To make error reports reproducible, validations run in this fixed order.
+First failing check wins; subsequent checks are not evaluated.
+
+1. Parse + flag validation (cases 1, 2, 3, 4) → exit 1
+2. Load + locate ModelObject + locate sources (cases 5, 6) → exit 6
+3. Name-collision check, with case 9 source-name-reuse disambiguation
+   applied (case 8) → exit 5
+4. `--filament` range (case 7) → exit 6
+5. Source volume type check (case 11) → exit 7
+6. Empty-mesh handling (cases 12, 13) → exit 7
+7. Filament agreement (case 10) → exit 7
+8. Per-volume config agreement (case 14) → exit 7
+
+### Idempotency
+
+`merge-parts` is not idempotent. A second invocation with the same
+`--parts` fails with exit 6 (`unknown_reference`) since the source
+volumes no longer exist after the first merge. The merged volume (named
+via `--into`) persists across subsequent operations.
 
 ---
 
@@ -310,11 +358,21 @@ insertion position, and Layer B realistic-mesh chain.
 11. Refuse: per-volume non-extruder config conflict → `invalid_state` (exit 7), message lists keys.
 12. Bake-in: source with non-identity `get_matrix()` → merged geometry reflects the transform (AABB sanity).
 13. Source attribution (Bug C lock-in): merged volume `source.input_file` matches first source.
-14. Merged volume inserted at FIRST source's position; other sources erased.
+14. Merged volume inserted at the LOWEST-EXISTING-INDEX source's position regardless of `--parts` order: construct an object with volumes `[A, B, C, D]`, call `merge_object_parts` with `source_part_names = ["C", "A", "B"]` (non-monotonic), assert the merged volume lands at `obj.volumes[0]` (A's original slot) and remaining volumes are `[merged, D]`.
+15. Explicit `--filament N` override on agreeing sources: all sources carry extruder=1, user passes `filament_override=2`; assert merged volume has extruder=2 (the explicit override wins over inheritance).
+16. Empty sources are excluded from filament agreement check: construct sources `[empty / ext=2, non-empty / ext=1, non-empty / ext=1]` with no `filament_override`; assert merged volume inherits extruder=1 with no conflict raised.
+17. Strict per-vol config rule rejects mixed carry/no-carry: construct sources `[carries wall_loops=5, doesn't carry wall_loops, object-level wall_loops=3]`; assert refusal with `invalid_state` (exit 7) and the key name `wall_loops` in the error message.
 
 ### E2E tests — `tests/cli/e2e/test_merge.cpp`
 
 1. Happy path + `inspect --json` confirms volume count -1 (for 2-source merge), merged name present, filament correct.
+
+   > Note: Test #2 below is intentionally an integration test that chains
+   > Phase 8 `split-to-parts` with `merge-parts`; a Phase 8 regression will
+   > surface here as a non-merge-parts failure. The focused merge-parts
+   > e2e tests (#1, #3–#13) use Layer A directly without going through
+   > `split-to-parts`.
+
 2. End-to-end Layer B realistic mesh: object add `box_with_text.stl` → split-to-parts (7 parts) → `set-filament --part` differential → `merge-parts` subset → inspect confirms merged result + non-merged parts intact. SKIP-when-absent if Layer B fixture missing.
 3. Exit 1: `--parts` missing.
 4. Exit 1: `--parts` has 1 entry.
