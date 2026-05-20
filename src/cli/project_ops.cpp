@@ -563,6 +563,29 @@ std::vector<std::string> object_config_keys(const ProjectState& s,
     return obj.config.keys();
 }
 
+std::vector<VolumeInfo> object_volume_info(const ProjectState& s,
+                                           const std::string&  object_name)
+{
+    using namespace Slic3r;
+    const ModelObject& obj = find_object_or_throw(s, object_name);
+
+    int obj_extruder = 1;
+    if (auto* oe = obj.config.get().opt<ConfigOptionInt>("extruder")) {
+        obj_extruder = oe->value;
+    }
+
+    std::vector<VolumeInfo> out;
+    out.reserve(obj.volumes.size());
+    for (const ModelVolume* v : obj.volumes) {
+        int eff = obj_extruder;
+        if (auto* ve = v->config.get().opt<ConfigOptionInt>("extruder")) {
+            eff = ve->value;
+        }
+        out.push_back({v->name, eff});
+    }
+    return out;
+}
+
 void remove_object(ProjectState& s, const std::string& object_name)
 {
     using namespace Slic3r;

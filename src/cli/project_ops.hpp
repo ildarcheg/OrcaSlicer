@@ -256,6 +256,19 @@ std::vector<std::string> changed_project_keys(const ProjectState& s);
 std::vector<std::string> object_config_keys(const ProjectState& s,
                                             const std::string& object_name);
 
+// Per-volume information for inspect output (T9).
+struct VolumeInfo {
+    std::string name;
+    int         extruder;
+};
+
+// Returns one VolumeInfo per ModelVolume in the named object. The
+// `extruder` field is taken from the per-volume config if set, falling
+// back to the object-level config, falling back to 1 if neither is set.
+//   throws std::out_of_range if no object named `object_name` exists.
+std::vector<VolumeInfo> object_volume_info(const ProjectState& s,
+                                           const std::string&  object_name);
+
 // --------------------------------------------------------------------------
 // Volume / part operations (Phase 8).
 

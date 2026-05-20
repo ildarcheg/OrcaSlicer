@@ -5,6 +5,8 @@
 #include <boost/filesystem.hpp>
 #include <nlohmann/json.hpp>
 
+#include <map>
+
 using namespace orca_cli_test;
 
 namespace fs = boost::filesystem;
@@ -77,6 +79,65 @@ TEST_CASE("object set-filament --part writes per-volume extruder",
         "--name", "multi2", "--part", "multi2_2", "--filament", "2"});
     INFO("set-filament part 2 stdout: " << rc2.stdout_ << "\nstderr: " << rc2.stderr_);
     REQUIRE(rc2.exit_code == 0);
+
+    fs::remove_all(tmp);
+}
+
+TEST_CASE("inspect --json shows per-volume info for split objects",
+          "[orca-cli][split][e2e]") {
+    if (ref_3mf().empty()) { SUCCEED("Skipped: reference 3mf not available"); return; }
+
+    const auto tmp = make_temp_dir();
+    const auto out = tmp / "split_inspect.3mf";
+    fs::copy_file(ref_3mf(), out);
+    const auto stl = fs::path(ORCA_CLI_FIXTURES_DIR) / "two_cubes.stl";
+    if (!fs::exists(stl)) { SUCCEED("Skipped: two_cubes.stl fixture not available"); return; }
+
+    auto add_plate_rc = run_cli({"plate", "add", out.string(), "--name", "SplitPlate"});
+    INFO("plate add stdout: " << add_plate_rc.stdout_ << "\nstderr: " << add_plate_rc.stderr_);
+    REQUIRE(add_plate_rc.exit_code == 0);
+
+    auto add_rc = run_cli({"object", "add", out.string(),
+        "--plate", "SplitPlate", "--stl", stl.string(), "--name", "insp"});
+    INFO("object add stdout: " << add_rc.stdout_ << "\nstderr: " << add_rc.stderr_);
+    REQUIRE(add_rc.exit_code == 0);
+
+    auto split_rc = run_cli({"object", "split-to-parts", out.string(), "--name", "insp"});
+    INFO("split-to-parts stdout: " << split_rc.stdout_ << "\nstderr: " << split_rc.stderr_);
+    REQUIRE(split_rc.exit_code == 0);
+
+    auto sf1_rc = run_cli({"object", "set-filament", out.string(),
+        "--name", "insp", "--part", "insp_1", "--filament", "1"});
+    INFO("set-filament insp_1 stdout: " << sf1_rc.stdout_ << "\nstderr: " << sf1_rc.stderr_);
+    REQUIRE(sf1_rc.exit_code == 0);
+
+    auto sf2_rc = run_cli({"object", "set-filament", out.string(),
+        "--name", "insp", "--part", "insp_2", "--filament", "2"});
+    INFO("set-filament insp_2 stdout: " << sf2_rc.stdout_ << "\nstderr: " << sf2_rc.stderr_);
+    REQUIRE(sf2_rc.exit_code == 0);
+
+    auto rc = run_cli({"--json", "inspect", out.string()});
+    INFO("inspect stdout: " << rc.stdout_ << "\nstderr: " << rc.stderr_);
+    REQUIRE(rc.exit_code == 0);
+
+    auto j = nlohmann::json::parse(rc.stdout_);
+    REQUIRE(j["status"] == "ok");
+
+    bool found = false;
+    for (const auto& o : j["data"]["objects"]) {
+        if (o["name"] == "insp") {
+            found = true;
+            REQUIRE(o.contains("volumes"));
+            REQUIRE(o["volumes"].size() == 2);
+            std::map<std::string, int> by_name;
+            for (const auto& v : o["volumes"]) {
+                by_name[v["name"].get<std::string>()] = v["extruder"].get<int>();
+            }
+            REQUIRE(by_name["insp_1"] == 1);
+            REQUIRE(by_name["insp_2"] == 2);
+        }
+    }
+    REQUIRE(found);
 
     fs::remove_all(tmp);
 }

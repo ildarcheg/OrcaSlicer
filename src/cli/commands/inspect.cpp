@@ -94,6 +94,12 @@ int do_inspect(const GlobalOpts& g, const std::string& file)
             auto& cfg_keys = obj_entry["config_keys"] = nlohmann::json::array();
             for (const auto& k : obj->config.keys())
                 cfg_keys.push_back(k);
+            const auto vi = object_volume_info(state, obj->name);
+            nlohmann::json vols_arr = nlohmann::json::array();
+            for (const auto& v : vi) {
+                vols_arr.push_back({{"name", v.name}, {"extruder", v.extruder}});
+            }
+            obj_entry["volumes"] = std::move(vols_arr);
             objs_arr.push_back(std::move(obj_entry));
         }
 
@@ -132,6 +138,15 @@ int do_inspect(const GlobalOpts& g, const std::string& file)
                        stdout);
             for (const auto& k : keys)
                 std::fputs(("  " + k + "\n").c_str(), stdout);
+            const auto vi = object_volume_info(state, obj->name);
+            if (vi.size() > 1) {
+                std::fputs("    volumes:\n", stdout);
+                for (const auto& v : vi) {
+                    std::string line = "      - " + v.name +
+                                       " (extruder " + std::to_string(v.extruder) + ")\n";
+                    std::fputs(line.c_str(), stdout);
+                }
+            }
         }
         std::fflush(stdout);
     }
