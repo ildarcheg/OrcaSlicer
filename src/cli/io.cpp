@@ -154,9 +154,8 @@ void passthrough_missing_thumbnails(const ProjectState& s,
 
     std::vector<std::string> to_synthesize;
     for (size_t i = 1; i <= s.plates.size(); ++i) {
-        const std::string mid  = "Metadata/plate_" + std::to_string(i) + ".png";
-        const std::string small = "Metadata/plate_" + std::to_string(i) + "_small.png";
-        for (const std::string& name : {mid, small}) {
+        const auto t = orca_cli::plate_thumbnail_paths(int(i));
+        for (const std::string& name : {t.mid, t.small}) {
             if (target_entries.count(name))     continue;
             if (planned_copy_names.count(name)) continue;
             to_synthesize.push_back(name);

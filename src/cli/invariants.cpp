@@ -1,5 +1,6 @@
 #include "invariants.hpp"
 #include "io.hpp"
+#include "png_placeholder.hpp"
 
 #include <libslic3r/miniz_extension.hpp>
 #include <libslic3r/Config.hpp>
@@ -114,11 +115,11 @@ void verify_plate_thumbnails(const std::vector<ZipEntry>& entries)
     std::smatch m;
     for (const auto& e : entries) {
         if (!std::regex_match(e.name, m, plate_re)) continue;
-        const std::string& n   = m[1].str();
-        const std::string small = "Metadata/plate_" + n + "_small.png";
-        if (names.find(small) == names.end()) {
+        const std::string& n = m[1].str();
+        const auto t = orca_cli::plate_thumbnail_paths(std::stoi(n));
+        if (names.find(t.small) == names.end()) {
             throw InvariantViolation(
-                "plate " + n + " missing small thumbnail: " + small);
+                "plate " + n + " missing small thumbnail: " + t.small);
         }
     }
 }

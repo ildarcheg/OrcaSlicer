@@ -98,3 +98,12 @@ TEST_CASE("orca-cli: placeholder PNG every pixel byte equals 0xC0 after IDAT dec
     }
     FAIL("IDAT chunk not found");
 }
+
+TEST_CASE("plate_thumbnail_paths(1) returns canonical names", "[orca-cli][cleanup][T4]") {
+    auto p = orca_cli::plate_thumbnail_paths(1);
+    REQUIRE(p.mid       == "Metadata/plate_1.png");
+    REQUIRE(p.small     == "Metadata/plate_1_small.png");
+    REQUIRE(p.no_light  == "Metadata/plate_no_light_1.png");
+    REQUIRE(p.top       == "Metadata/top_1.png");
+    REQUIRE(p.pick      == "Metadata/pick_1.png");
+}

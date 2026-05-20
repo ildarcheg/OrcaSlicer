@@ -5,9 +5,21 @@
 #include <cstdint>
 #include <cstring>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace orca_cli {
+
+PlateThumbnailPaths plate_thumbnail_paths(int n) {
+    const std::string s = std::to_string(n);
+    return PlateThumbnailPaths{
+        "Metadata/plate_" + s + ".png",
+        "Metadata/plate_" + s + "_small.png",
+        "Metadata/plate_no_light_" + s + ".png",
+        "Metadata/top_" + s + ".png",
+        "Metadata/pick_" + s + ".png",
+    };
+}
 
 namespace {
 
