@@ -7,6 +7,14 @@ set(ORCA_CLI_STL_DIR
     "C:/Users/ildarcheg/Documents/GitHub/slicer_tamplates"
     CACHE PATH "STL fixture directory for orca-cli tests")
 
+# Layer A fixture dir (committed in-tree, always present).
+set(ORCA_CLI_FIXTURES_DIR "${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
+    CACHE PATH "Committed in-tree fixture directory for orca-cli tests")
+
+# Generator for the two_cubes.stl Layer A fixture. Build target; not
+# wired into the test pipeline. Run manually when regenerating the .stl.
+add_executable(gen_minimal_stls fixtures/gen_minimal_stls.cpp)
+
 file(GLOB ORCA_CLI_TEST_SRC CONFIGURE_DEPENDS
     test_main.cpp
     test_common.cpp
@@ -20,6 +28,7 @@ add_executable(cli_tests ${ORCA_CLI_TEST_SRC})
 target_compile_definitions(cli_tests PRIVATE
     ORCA_CLI_REF_3MF="${ORCA_CLI_REF_3MF}"
     ORCA_CLI_STL_DIR="${ORCA_CLI_STL_DIR}"
+    ORCA_CLI_FIXTURES_DIR="${ORCA_CLI_FIXTURES_DIR}"
     ORCA_CLI_EXE="$<TARGET_FILE:orca-cli>"
 )
 
