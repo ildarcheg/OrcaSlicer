@@ -254,4 +254,21 @@ std::vector<std::string> changed_project_keys(const ProjectState& s);
 std::vector<std::string> object_config_keys(const ProjectState& s,
                                             const std::string& object_name);
 
+// --------------------------------------------------------------------------
+// Volume / part operations (Phase 8).
+
+// split_object_to_parts: decompose the named ModelObject's single ModelVolume
+// into multiple ModelVolumes (one per connected mesh component) within the
+// same object. The object keeps its name, position, plate assignment, and
+// instance count. New volumes are named "{name}_1", "{name}_2", ... per
+// libslic3r convention (Model.cpp:2785). Preserves source attribution on
+// every resulting volume (Bug C defense - see stamp_source_if_missing,
+// added in Task 5).
+//
+//   throws std::out_of_range     if no object with that name exists.
+//   throws std::invalid_argument if the object has != 1 volume, the volume
+//                                is not a MODEL_PART, or the mesh has only
+//                                1 connected component.
+void split_object_to_parts(ProjectState& s, const std::string& object_name);
+
 } // namespace orca_cli

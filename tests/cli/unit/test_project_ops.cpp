@@ -593,3 +593,64 @@ TEST_CASE("printable_area read produces same bed extent before/after refactor",
     REQUIRE_NOTHROW(add_object(s, p));
     REQUIRE(s.model->objects.back()->name == "cube_t5");
 }
+
+// -- T4: split_object_to_parts -------------------------------------------------
+
+TEST_CASE("split_object_to_parts produces 2 volumes from two_cubes.stl",
+          "[orca-cli][split][unit]") {
+    namespace fs = boost::filesystem;
+    using namespace orca_cli;
+    ProjectState s = load_project(ORCA_CLI_REF_3MF);
+    AddObjectParams p;
+    p.plate_name  = s.plates.front()->plate_name;
+    p.stl_path    = (fs::path(ORCA_CLI_FIXTURES_DIR) / "two_cubes.stl").string();
+    p.object_name = "two_cubes_a";
+    p.count       = 1;
+    REQUIRE_NOTHROW(add_object(s, p));
+    REQUIRE(find_object(s, "two_cubes_a") != nullptr);
+
+    REQUIRE_NOTHROW(split_object_to_parts(s, "two_cubes_a"));
+    auto* obj = find_object(s, "two_cubes_a");
+    REQUIRE(obj != nullptr);
+    REQUIRE(obj->volumes.size() == 2);
+    // libslic3r convention: post-split volumes named {original}_1, _2, ...
+    REQUIRE(obj->volumes[0]->name == std::string("two_cubes_a_1"));
+    REQUIRE(obj->volumes[1]->name == std::string("two_cubes_a_2"));
+}
+
+TEST_CASE("split_object_to_parts on single-component mesh throws invalid_argument",
+          "[orca-cli][split][unit]") {
+    namespace fs = boost::filesystem;
+    using namespace orca_cli;
+    ProjectState s = load_project(ORCA_CLI_REF_3MF);
+    AddObjectParams p;
+    p.plate_name  = s.plates.front()->plate_name;
+    p.stl_path    = (fs::path(ORCA_CLI_STL_DIR) / "000_01_test_cube.stl").string();
+    p.object_name = "single_cube";
+    p.count       = 1;
+    REQUIRE_NOTHROW(add_object(s, p));
+    REQUIRE_THROWS_AS(split_object_to_parts(s, "single_cube"), std::invalid_argument);
+}
+
+TEST_CASE("split_object_to_parts on already-split object throws invalid_argument",
+          "[orca-cli][split][unit]") {
+    namespace fs = boost::filesystem;
+    using namespace orca_cli;
+    ProjectState s = load_project(ORCA_CLI_REF_3MF);
+    AddObjectParams p;
+    p.plate_name  = s.plates.front()->plate_name;
+    p.stl_path    = (fs::path(ORCA_CLI_FIXTURES_DIR) / "two_cubes.stl").string();
+    p.object_name = "two_cubes_b";
+    p.count       = 1;
+    REQUIRE_NOTHROW(add_object(s, p));
+    REQUIRE_NOTHROW(split_object_to_parts(s, "two_cubes_b"));
+    // Second call must fail because the object now has 2 volumes.
+    REQUIRE_THROWS_AS(split_object_to_parts(s, "two_cubes_b"), std::invalid_argument);
+}
+
+TEST_CASE("split_object_to_parts on unknown object throws out_of_range",
+          "[orca-cli][split][unit]") {
+    using namespace orca_cli;
+    ProjectState s = load_project(ORCA_CLI_REF_3MF);
+    REQUIRE_THROWS_AS(split_object_to_parts(s, "__nope__"), std::out_of_range);
+}

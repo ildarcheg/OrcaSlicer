@@ -572,4 +572,37 @@ void remove_object(ProjectState& s, const std::string& object_name)
     }
 }
 
+void split_object_to_parts(ProjectState& s, const std::string& object_name) {
+    using namespace Slic3r;
+    ModelObject& obj = find_object_or_throw(s, object_name);
+
+    if (obj.volumes.size() != 1) {
+        throw std::invalid_argument(
+            "cannot split: object already has multiple volumes; "
+            "use object split-to-objects first");
+    }
+    ModelVolume* vol = obj.volumes.front();
+    if (vol->type() != ModelVolumeType::MODEL_PART) {
+        throw std::invalid_argument(
+            "cannot split: only model parts can be split");
+    }
+
+    // ModelVolume::split names the resulting volumes "{vol->name}_1",
+    // "{vol->name}_2", ... (Model.cpp:2785). Align the volume name with
+    // the object name so the post-split naming is "{object_name}_1", etc.
+    // This is required when the volume was loaded from an STL whose
+    // filename differs from the user-supplied object name (the STL loader
+    // sets vol->name = STL basename by default).
+    vol->name = object_name;
+
+    const int filament_count = filament_slot_count(*s.project_config);
+    size_t produced = vol->split(static_cast<unsigned int>(filament_count),
+                                 /*remap_paint=*/true);
+    if (produced <= 1) {
+        throw std::invalid_argument(
+            "cannot split: object has only 1 connected mesh component");
+    }
+    // Source attribution preservation runs in Task 5.
+}
+
 } // namespace orca_cli
