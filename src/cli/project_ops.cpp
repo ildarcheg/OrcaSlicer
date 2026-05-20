@@ -942,6 +942,15 @@ void merge_object_parts(ProjectState& s,
     }
     obj.volumes.swap(rebuilt);
     obj.invalidate_bounding_box();
+
+    // Promote the merged extruder to the object-level config so that it
+    // survives a bbs_3mf save/load roundtrip. The bbs_3mf loader
+    // unconditionally erases the volume-level extruder for single-volume
+    // objects (bbs_3mf.cpp ~line 2236-2238); the effective extruder for
+    // such objects is read from the object config instead. Stamping it
+    // here also keeps multi-volume results consistent: the object config
+    // records the "default" filament for any non-overriding volumes.
+    obj.config.set("extruder", merged_extruder);
 }
 
 } // namespace orca_cli
