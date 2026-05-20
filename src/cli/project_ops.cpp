@@ -572,6 +572,15 @@ void remove_object(ProjectState& s, const std::string& object_name)
     }
 }
 
+void stamp_source_if_missing(Slic3r::ModelVolume&              vol,
+                             const Slic3r::ModelVolume::Source& fallback) {
+    if (vol.source.input_file.empty()) {
+        vol.source.input_file = fallback.input_file;
+        vol.source.object_idx = fallback.object_idx;
+        vol.source.volume_idx = fallback.volume_idx;
+    }
+}
+
 void split_object_to_parts(ProjectState& s, const std::string& object_name) {
     using namespace Slic3r;
     ModelObject& obj = find_object_or_throw(s, object_name);
@@ -587,13 +596,18 @@ void split_object_to_parts(ProjectState& s, const std::string& object_name) {
             "cannot split: only model parts can be split");
     }
 
-    // ModelVolume::split names the resulting volumes "{vol->name}_1",
-    // "{vol->name}_2", ... (Model.cpp:2785). Align the volume name with
-    // the object name so the post-split naming is "{object_name}_1", etc.
-    // This is required when the volume was loaded from an STL whose
-    // filename differs from the user-supplied object name (the STL loader
-    // sets vol->name = STL basename by default).
+    // Align volume name with object name so libslic3r's split-name
+    // convention ({original}_1, _2, ...) produces user-visible names
+    // matching the object name (not the STL filename). STL loader sets
+    // vol->name = STL basename by default; without this alignment the
+    // resulting parts would carry the filename prefix.
     vol->name = object_name;
+
+    // Capture parent source BEFORE split. ModelVolume::split mutates
+    // `*vol` in place (it becomes the first post-split volume), so we
+    // need a snapshot to stamp any new volumes that ended up without
+    // source attribution. Bug C defense - see stamp_source_if_missing.
+    const ModelVolume::Source parent_source = vol->source;
 
     const int filament_count = filament_slot_count(*s.project_config);
     size_t produced = vol->split(static_cast<unsigned int>(filament_count),
@@ -602,7 +616,10 @@ void split_object_to_parts(ProjectState& s, const std::string& object_name) {
         throw std::invalid_argument(
             "cannot split: object has only 1 connected mesh component");
     }
-    // Source attribution preservation runs in Task 5.
+
+    for (ModelVolume* v : obj.volumes) {
+        stamp_source_if_missing(*v, parent_source);
+    }
 }
 
 } // namespace orca_cli

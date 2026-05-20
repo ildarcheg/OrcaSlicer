@@ -654,3 +654,88 @@ TEST_CASE("split_object_to_parts on unknown object throws out_of_range",
     ProjectState s = load_project(ORCA_CLI_REF_3MF);
     REQUIRE_THROWS_AS(split_object_to_parts(s, "__nope__"), std::out_of_range);
 }
+
+TEST_CASE("stamp_source_if_missing leaves already-set source unchanged "
+          "(propagation case)",
+          "[orca-cli][split][unit][source-attribution]") {
+    using namespace orca_cli;
+    using namespace Slic3r;
+
+    ModelVolume::Source fallback;
+    fallback.input_file = "/tmp/should-not-be-used.stl";
+    fallback.object_idx = 99;
+    fallback.volume_idx = 99;
+
+    // Synthesize a ModelVolume with source already populated. Direct
+    // construction via Model+ModelObject because ModelVolume has no public
+    // default ctor.
+    Model m;
+    ModelObject* obj = m.add_object();
+    TriangleMesh empty_mesh;
+    ModelVolume* vol = obj->add_volume(empty_mesh);
+    vol->source.input_file = "/real/path.stl";
+    vol->source.object_idx = 7;
+    vol->source.volume_idx = 3;
+
+    stamp_source_if_missing(*vol, fallback);
+
+    REQUIRE(vol->source.input_file == std::string("/real/path.stl"));
+    REQUIRE(vol->source.object_idx == 7);
+    REQUIRE(vol->source.volume_idx == 3);
+}
+
+TEST_CASE("stamp_source_if_missing stamps from fallback when input_file is empty "
+          "(regression simulation case - simulates future libslic3r breakage)",
+          "[orca-cli][split][unit][source-attribution]") {
+    using namespace orca_cli;
+    using namespace Slic3r;
+
+    ModelVolume::Source fallback;
+    fallback.input_file = "/real/path.stl";
+    fallback.object_idx = 7;
+    fallback.volume_idx = 3;
+
+    Model m;
+    ModelObject* obj = m.add_object();
+    TriangleMesh empty_mesh;
+    ModelVolume* vol = obj->add_volume(empty_mesh);
+    // Manually clear source to simulate a hypothetical future libslic3r
+    // change where ModelVolume::split does NOT propagate source to children.
+    vol->source = ModelVolume::Source();
+    REQUIRE(vol->source.input_file.empty());
+
+    stamp_source_if_missing(*vol, fallback);
+
+    REQUIRE(vol->source.input_file == std::string("/real/path.stl"));
+    REQUIRE(vol->source.object_idx == 7);
+    REQUIRE(vol->source.volume_idx == 3);
+}
+
+TEST_CASE("split_object_to_parts preserves source attribution on every "
+          "new volume (Bug C lock-in)",
+          "[orca-cli][split][unit][source-attribution]") {
+    namespace fs = boost::filesystem;
+    using namespace orca_cli;
+    ProjectState s = load_project(ORCA_CLI_REF_3MF);
+    AddObjectParams p;
+    p.plate_name  = s.plates.front()->plate_name;
+    p.stl_path    = (fs::path(ORCA_CLI_FIXTURES_DIR) / "two_cubes.stl").string();
+    p.object_name = "two_cubes_src";
+    p.count       = 1;
+    REQUIRE_NOTHROW(add_object(s, p));
+    REQUIRE_NOTHROW(split_object_to_parts(s, "two_cubes_src"));
+
+    auto* obj = find_object(s, "two_cubes_src");
+    REQUIRE(obj != nullptr);
+    REQUIRE(obj->volumes.size() == 2);
+    for (size_t i = 0; i < obj->volumes.size(); ++i) {
+        DYNAMIC_SECTION("volume " << i << " source attribution") {
+            const auto& src = obj->volumes[i]->source;
+            INFO("input_file=" << src.input_file
+                 << " object_idx=" << src.object_idx
+                 << " volume_idx=" << src.volume_idx);
+            REQUIRE_FALSE(src.input_file.empty());
+            REQUIRE(src.input_file == p.stl_path);
+        }
+    }
+}

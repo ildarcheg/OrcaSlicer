@@ -271,4 +271,15 @@ std::vector<std::string> object_config_keys(const ProjectState& s,
 //                                1 connected component.
 void split_object_to_parts(ProjectState& s, const std::string& object_name);
 
+// stamp_source_if_missing: if `vol.source.input_file` is empty, copy the
+// fields from `fallback`. No-op when `vol.source.input_file` is already
+// populated. Used by split_object_to_parts to enforce that every post-split
+// volume carries source attribution even if a future libslic3r change
+// stops propagating it through ModelVolume::split.
+//
+// Bug C defense: missing source_file makes some Orca/Bambu GUI versions
+// silently drop the part on load. Original orca-cli design spec section 8.
+void stamp_source_if_missing(Slic3r::ModelVolume&              vol,
+                             const Slic3r::ModelVolume::Source& fallback);
+
 } // namespace orca_cli
