@@ -182,24 +182,16 @@ int do_object_list(const GlobalOpts& g, const std::string& file)
         rows.push_back({state.model->objects[i]->name, std::string{}});
     }
 
-    if (g.json) {
-        nlohmann::json data;
-        auto& arr = data["objects"] = nlohmann::json::array();
-        for (const auto& r : rows) {
-            arr.push_back({
-                {"name",  r.object},
-                {"plate", r.plate},
-            });
-        }
-        print_ok(g, "listed " + std::to_string(rows.size()) + " objects", data);
-    } else {
-        for (const auto& r : rows) {
-            std::string line = "object: " + r.object
-                             + " on plate " + r.plate + "\n";
-            std::fputs(line.c_str(), stdout);
-        }
-        std::fflush(stdout);
-    }
+    emit_list_response(g, "objects",
+        "listed " + std::to_string(rows.size()) + " objects",
+        rows,
+        [](const Row& r) {
+            return nlohmann::json{{"name",  r.object},
+                                  {"plate", r.plate}};
+        },
+        [](const Row& r) {
+            return "object: " + r.object + " on plate " + r.plate;
+        });
     return int(ExitCode::ok);
 }
 

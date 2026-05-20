@@ -164,23 +164,16 @@ int do_config_list(const GlobalOpts& g,
         return int(ExitCode::parse_failure);
     }
 
-    if (g.json) {
-        nlohmann::json data;
-        auto& arr = data["keys"] = nlohmann::json::array();
-        for (const auto& r : rows) {
-            arr.push_back({
-                {"key",   r.key},
-                {"value", r.value},
-            });
-        }
-        print_ok(g, "listed " + std::to_string(rows.size()) + " config keys", data);
-    } else {
-        for (const auto& r : rows) {
-            const std::string line = r.key + " = " + r.value + "\n";
-            std::fputs(line.c_str(), stdout);
-        }
-        std::fflush(stdout);
-    }
+    emit_list_response(g, "keys",
+        "listed " + std::to_string(rows.size()) + " config keys",
+        rows,
+        [](const Row& r) {
+            return nlohmann::json{{"key",   r.key},
+                                  {"value", r.value}};
+        },
+        [](const Row& r) {
+            return r.key + " = " + r.value;
+        });
     return int(ExitCode::ok);
 }
 

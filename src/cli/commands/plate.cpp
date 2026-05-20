@@ -55,29 +55,26 @@ int do_plate_list(const GlobalOpts& g, const std::string& input)
         return int(ExitCode::parse_failure);
     }
 
-    if (g.json) {
-        nlohmann::json data;
-        auto& arr = data["plates"] = nlohmann::json::array();
-        for (size_t i = 0; i < state.plates.size(); ++i) {
-            arr.push_back({
-                {"index",        int(i + 1)},
-                {"name",         state.plates[i]->plate_name},
-                {"object_count", int(state.plates[i]->objects_and_instances.size())},
-            });
-        }
-        print_ok(g, "listed " + std::to_string(state.plates.size()) + " plates", data);
-    } else {
-        for (size_t i = 0; i < state.plates.size(); ++i) {
-            // 1-based on display to match on-disk plate_N.png naming.
-            const auto& p = state.plates[i];
-            std::string line = "plate " + std::to_string(i + 1)
-                             + ": " + p->plate_name
-                             + " (" + std::to_string(p->objects_and_instances.size())
-                             + " objects)\n";
-            std::fputs(line.c_str(), stdout);
-        }
-        std::fflush(stdout);
+    struct Row { int index; std::string name; int obj_count; };
+    std::vector<Row> rows;
+    rows.reserve(state.plates.size());
+    for (size_t i = 0; i < state.plates.size(); ++i) {
+        rows.push_back({int(i + 1),
+                        state.plates[i]->plate_name,
+                        int(state.plates[i]->objects_and_instances.size())});
     }
+    emit_list_response(g, "plates",
+        "listed " + std::to_string(rows.size()) + " plates",
+        rows,
+        [](const Row& r) {
+            return nlohmann::json{{"index",        r.index},
+                                  {"name",         r.name},
+                                  {"object_count", r.obj_count}};
+        },
+        [](const Row& r) {
+            return "plate " + std::to_string(r.index) + ": " + r.name
+                 + " (" + std::to_string(r.obj_count) + " objects)";
+        });
     return int(ExitCode::ok);
 }
 
