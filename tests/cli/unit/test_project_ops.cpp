@@ -500,3 +500,42 @@ TEST_CASE("orca-cli: changed_project_keys returns at least one key for the refer
     // coEnum here instead of returning a vector.
     REQUIRE_FALSE(changed.empty());
 }
+
+TEST_CASE("orca-cli: set_project_config marks the key in different_settings_to_system",
+          "[orca-cli][P6][unit]")
+{
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+    using namespace orca_cli;
+    using namespace Slic3r;
+    auto s = load_project(orca_cli_test::ref_3mf().string());
+
+    set_project_config(s, "sparse_infill_density", "30%");
+
+    auto* diff = s.project_config->option<ConfigOptionStrings>("different_settings_to_system");
+    REQUIRE(diff != nullptr);
+    REQUIRE(diff->values.size() >= 2);
+    std::vector<std::string> process_dirty;
+    unescape_strings_cstyle(diff->values[0], process_dirty);
+    REQUIRE(std::find(process_dirty.begin(), process_dirty.end(), "sparse_infill_density")
+            != process_dirty.end());
+}
+
+TEST_CASE("orca-cli: unset_project_config clears the key from different_settings_to_system",
+          "[orca-cli][P6][unit]")
+{
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+    using namespace orca_cli;
+    using namespace Slic3r;
+    auto s = load_project(orca_cli_test::ref_3mf().string());
+
+    set_project_config(s, "sparse_infill_density", "30%");
+    unset_project_config(s, "sparse_infill_density");
+
+    auto* diff = s.project_config->option<ConfigOptionStrings>("different_settings_to_system");
+    if (diff) {
+        std::vector<std::string> process_dirty;
+        unescape_strings_cstyle(diff->values[0], process_dirty);
+        REQUIRE(std::find(process_dirty.begin(), process_dirty.end(), "sparse_infill_density")
+                == process_dirty.end());
+    }
+}

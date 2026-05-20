@@ -4,11 +4,14 @@
 #include "io.hpp"
 #include "project_ops.hpp"
 
+#include <libslic3r/Config.hpp>
 #include <libslic3r/Model.hpp>
 #include <libslic3r/PrintConfig.hpp>
 
+#include <algorithm>
 #include <boost/filesystem.hpp>
 #include <string>
+#include <vector>
 
 using namespace orca_cli_test;
 
@@ -238,4 +241,23 @@ TEST_CASE("orca-cli: config set --output writes to side-car, leaves input untouc
     const auto* opt = s_out.project_config->option("sparse_infill_density");
     REQUIRE(opt != nullptr);
     REQUIRE(opt->serialize() == "42%");
+}
+
+TEST_CASE("orca-cli: config set adds key to different_settings_to_system in saved 3mf",
+          "[orca-cli][P6][e2e]")
+{
+    if (ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+    auto tmp = make_temp_dir();
+    auto in  = copy_ref_to_temp(tmp, "cfg-set-diff-marker");
+    REQUIRE(run_cli({"config", "set", in.string(),
+                     "--key",   "sparse_infill_density",
+                     "--value", "30%"}).exit_code == 0);
+
+    auto s = orca_cli::load_project(in.string());
+    auto* diff = s.project_config->option<Slic3r::ConfigOptionStrings>("different_settings_to_system");
+    REQUIRE(diff != nullptr);
+    REQUIRE(diff->values.size() >= 2);
+    std::vector<std::string> dirty;
+    Slic3r::unescape_strings_cstyle(diff->values[0], dirty);
+    REQUIRE(std::find(dirty.begin(), dirty.end(), "sparse_infill_density") != dirty.end());
 }

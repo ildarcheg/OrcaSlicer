@@ -5,6 +5,7 @@
 #include "placement.hpp"
 
 #include <libslic3r/Format/STL.hpp>
+#include <libslic3r/Preset.hpp>
 #include <libslic3r/PrintConfig.hpp>
 
 #include <boost/filesystem.hpp>
@@ -349,6 +350,113 @@ Slic3r::ModelObject* find_object_or_throw(ProjectState&      s,
     throw std::out_of_range("object not found: " + object_name);
 }
 
+// --------------------------------------------------------------------------
+// different_settings_to_system marker helpers.
+//
+// The GUI's PresetBundle uses `different_settings_to_system` (a
+// ConfigOptionStrings with filament_count + 2 slots) to identify which keys
+// are project overrides vs preset defaults. Slot 0 is process-preset dirty
+// keys, slot 1 is printer-preset dirty keys, slots 2..N+1 are per-filament
+// dirty keys. Each slot's body is a c-style-escaped list of keys
+// (escape_strings_cstyle / unescape_strings_cstyle).
+//
+// Without our key in that field, the GUI shows the preset's default value
+// even though project_settings.config has our override -- the P6 smoke
+// gate surfaced this with `sparse_infill_density: 30%` rendering as 15%.
+
+// Decide which slot (process=0, printer=1, filament=2..) a config key belongs to.
+// Returns -2 (sentinel) for filament keys meaning "all filament slots".
+// Unknown keys default to slot 0 (process) so the GUI still sees them as
+// overrides -- the GUI itself only renders them if they're meaningful to
+// the process panel.
+int classify_key_slot(const std::string& key, int /*filament_count*/)
+{
+    using namespace Slic3r;
+    {
+        const auto& opts = Preset::print_options();
+        if (std::find(opts.begin(), opts.end(), key) != opts.end()) return 0;
+    }
+    {
+        const auto& opts = Preset::printer_options();
+        if (std::find(opts.begin(), opts.end(), key) != opts.end()) return 1;
+    }
+    {
+        const auto& opts = Preset::filament_options();
+        if (std::find(opts.begin(), opts.end(), key) != opts.end())
+            return -2;   // sentinel: all filament slots
+    }
+    return 0;
+}
+
+// Reads filament count from filament_settings_id, defaulting to 1.
+int filament_count_of(const Slic3r::DynamicPrintConfig& cfg)
+{
+    using namespace Slic3r;
+    if (auto* fsid = cfg.option<ConfigOptionStrings>("filament_settings_id"))
+        return std::max(1, int(fsid->values.size()));
+    return 1;
+}
+
+// Returns the diff option sized to (filament_count + 2) slots, creating the
+// option if missing.
+Slic3r::ConfigOptionStrings* get_or_create_diff_settings(
+    Slic3r::DynamicPrintConfig& cfg, int filament_count)
+{
+    using namespace Slic3r;
+    auto* diff = cfg.option<ConfigOptionStrings>("different_settings_to_system", true);
+    if (int(diff->values.size()) < filament_count + 2)
+        diff->values.resize(size_t(filament_count + 2), std::string{});
+    return diff;
+}
+
+void add_key_to_slot(Slic3r::ConfigOptionStrings* diff, int slot, const std::string& key)
+{
+    using namespace Slic3r;
+    std::vector<std::string> keys;
+    unescape_strings_cstyle(diff->values[slot], keys);
+    if (std::find(keys.begin(), keys.end(), key) == keys.end())
+        keys.push_back(key);
+    diff->values[slot] = escape_strings_cstyle(keys);
+}
+
+void remove_key_from_slot(Slic3r::ConfigOptionStrings* diff, int slot, const std::string& key)
+{
+    using namespace Slic3r;
+    std::vector<std::string> keys;
+    unescape_strings_cstyle(diff->values[slot], keys);
+    auto it = std::find(keys.begin(), keys.end(), key);
+    if (it != keys.end()) keys.erase(it);
+    diff->values[slot] = escape_strings_cstyle(keys);
+}
+
+void mark_project_key_dirty(ProjectState& s, const std::string& key)
+{
+    int fc = filament_count_of(*s.project_config);
+    auto* diff = get_or_create_diff_settings(*s.project_config, fc);
+    int slot = classify_key_slot(key, fc);
+    if (slot == -2) {
+        for (int i = 0; i < fc; ++i)
+            add_key_to_slot(diff, 2 + i, key);
+    } else {
+        add_key_to_slot(diff, slot, key);
+    }
+}
+
+void unmark_project_key_dirty(ProjectState& s, const std::string& key)
+{
+    int fc = filament_count_of(*s.project_config);
+    auto* diff = s.project_config->option<Slic3r::ConfigOptionStrings>("different_settings_to_system");
+    if (!diff) return;
+    if (int(diff->values.size()) < fc + 2) return;
+    int slot = classify_key_slot(key, fc);
+    if (slot == -2) {
+        for (int i = 0; i < fc; ++i)
+            remove_key_from_slot(diff, 2 + i, key);
+    } else {
+        remove_key_from_slot(diff, slot, key);
+    }
+}
+
 } // namespace
 
 void set_project_config(ProjectState& s, const std::string& key, const std::string& value)
@@ -363,6 +471,12 @@ void set_project_config(ProjectState& s, const std::string& key, const std::stri
     } catch (const std::exception& e) {
         throw BadConfigError("invalid value for '" + key + "': " + e.what());
     }
+    // Mark the key in different_settings_to_system so the GUI's PresetBundle
+    // treats it as a project override of the system preset rather than
+    // falling back to the preset's default. Without this the value lands in
+    // project_settings.config but the Process panel still renders the
+    // preset's value (e.g. our 30% sparse_infill_density showed as 15%).
+    mark_project_key_dirty(s, key);
 }
 
 void set_object_config(ProjectState& s, const std::string& object_name,
@@ -391,6 +505,10 @@ void unset_project_config(ProjectState& s, const std::string& key)
     // an existing key". A typo on the key name was already rejected
     // above by validate_key_exists.
     s.project_config->erase(key);
+    // Symmetric with set_project_config: remove the key from
+    // different_settings_to_system so the GUI no longer treats the
+    // (now-removed) value as a project override of the preset.
+    unmark_project_key_dirty(s, key);
 }
 
 void unset_object_config(ProjectState& s, const std::string& object_name,
