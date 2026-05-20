@@ -93,7 +93,12 @@ Human-mode output gains a `volumes:` indented block under each object that has m
 3. Validate volume type: `vol.type() != ModelVolumeType::MODEL_PART` → throw `std::invalid_argument("cannot split: only model parts can be split")` → exit 7. Modifier/support volumes don't have mesh components to split into parts.
 4. Call `vol.split(filament_count, /*remap_paint=*/true)` where `filament_count = filament_slot_count(*s.project_config)`. libslic3r returns the number of resulting volumes.
 5. If return value `== 1` (single connected component, no split occurred), throw `std::invalid_argument("cannot split: object has only 1 connected mesh component")` → exit 7.
-6. Save via the existing pipeline — atomic `.tmp` + rename, invariant guards run on the saved archive.
+6. **Source-attribution preservation (Bug C defense).** After `vol.split()` returns, every resulting `ModelVolume` MUST carry the parent volume's `source.input_file`, `source.object_idx`, and `source.volume_idx`. The original orca-cli design § 8 added "Bug C" for missing `source_file` causing some Orca/Bambu GUI versions to silently drop volumes on load; split must not re-introduce that bug class. The helper first checks whether libslic3r already propagated these fields from the parent volume; if any new volume's `source.input_file` is empty, the helper stamps it (and the index pair) from the parent and asserts the result. Either path leaves all post-split volumes with valid source attribution.
+7. Save via the existing pipeline — atomic `.tmp` + rename, invariant guards run on the saved archive.
+
+**Instance preservation.** Split modifies volumes only; the ModelObject's `instances` vector is untouched. An object created with `--count N` before split remains a single ModelObject with N instances after split, with each instance now rendering all M post-split volumes.
+
+**Object-level `extruder` is not cleared.** Split does not touch `obj->config`. The object-level `extruder` value (set by an earlier `set-filament` without `--part`) remains in place. After `set-filament --part Y --filament Z`, the per-volume value on Y shadows the object-level value for Y's mesh, but the object-level value remains for any volume that lacks a per-volume override. `inspect` shows both: `objects[].config_keys` reflects the object-level config; `objects[].volumes[].extruder` reflects each volume's effective extruder (per-volume override if set, else falling back to object-level).
 
 libslic3r's `vol.split()` internally handles:
 
@@ -171,7 +176,7 @@ This mirrors `do_plate_remove`'s override for `invalid_argument` → `invalid_st
 ### Idempotency
 
 - `split-to-parts` is **not idempotent**. Running twice on the same object: first run succeeds; second run errors with exit 7 (`already has multiple volumes`). This is the desired behaviour — better than silently double-splitting or silently no-opping.
-- `set-filament --part` is idempotent — same slot set twice is a no-op write.
+- `set-filament --part` is **idempotent in STATE** (re-running with the same slot leaves the model byte-identical) but **NOT in SIDE-EFFECTS** (every call still triggers a full `.tmp` write + invariant-guard run + rename swap, since the CLI does not diff before saving).
 
 ### `--part` on single-volume objects
 
@@ -198,16 +203,36 @@ After split:
 
 All tests follow existing conventions: Catch2 v3 (`<catch2/catch_all.hpp>`), `[orca-cli]` prefix tag, no `&&` inside `REQUIRE`, fixture macros from `tests/cli/test_common.hpp`. New tests share an `[orca-cli][split]` tag for filterability.
 
-### Fixture setup
+### Fixture setup — two-layer model
 
-Copy `box_with_text.stl` from `C:\Users\ildarcheg\Documents\GitHub\` into the `ORCA_CLI_STL_DIR` fixture directory (`C:\Users\ildarcheg\Documents\GitHub\slicer_tamplates\`) as a one-time setup step in the implementation task. The STL is a 35 KB binary mesh expected to contain ≥ 2 connected components (a box with embossed text glyphs as separate meshes).
+Matches the canonical orca-cli design § 6.2: a committed CI-portable synthetic fixture plus an optional realistic local-dev fixture.
 
-`reference_orca_cli_fixtures.md` in memory will be updated to list this fixture.
+**Layer A — committed, CI-portable**: `tests/cli/fixtures/two_cubes.stl`.
 
-### Fixture sanity test (added first, gates everything else)
+A ~700-byte binary STL containing two disjoint axis-aligned cubes (e.g., a 10 mm cube at the origin and a 10 mm cube offset by `(30, 0, 0)`), generated at fixture-prep time by a small in-tree helper at `tests/cli/fixtures/gen_minimal_stls.cpp` (following the pattern from the original orca-cli plan). The generator is a CMake-built executable that emits the .stl into the source tree; running it is idempotent and the produced file is committed to git. Tests reference this file via a compile-time define `ORCA_CLI_FIXTURES_DIR` pointing at `tests/cli/fixtures/`. Layer A is the canonical fixture for every unit test, every roundtrip test, and any e2e that needs a deterministic component count. It is always present in CI.
+
+**Layer B — realistic, local-dev only**: `box_with_text.stl` lives in `slicer_tamplates\` (existing `ORCA_CLI_STL_DIR` cache variable). It is NOT committed to git. The file (~35 KB) contains a box with embossed text glyphs as separate meshes, expected to produce 4–10+ connected components on split. Layer B is the fixture for the manual smoke recipe and exactly one e2e test that exercises a more interesting multi-component mesh. The e2e test cleanly `SKIP`s when the file is missing — CI does not fail without it.
+
+`reference_orca_cli_fixtures.md` in memory will be updated to list both layers and their intended use.
+
+### Fixture sanity tests (added first, gate everything else)
 
 ```cpp
-TEST_CASE("box_with_text.stl is multi-component (fixture sanity)",
+TEST_CASE("two_cubes.stl is two-component (Layer A fixture sanity)",
+          "[orca-cli][split][fixture]") {
+    namespace fs = boost::filesystem;
+    const auto path = fs::path(ORCA_CLI_FIXTURES_DIR) / "two_cubes.stl";
+    REQUIRE(fs::exists(path)); // hard-required: committed in-tree
+    Slic3r::Model m;
+    REQUIRE(Slic3r::load_stl(path.string().c_str(), &m, nullptr));
+    REQUIRE(m.objects.size() == 1);
+    REQUIRE(m.objects[0]->volumes.size() == 1);
+    auto components = m.objects[0]->volumes[0]->mesh().split();
+    INFO("connected components: " << components.size());
+    REQUIRE(components.size() == 2);
+}
+
+TEST_CASE("box_with_text.stl is multi-component (Layer B fixture sanity)",
           "[orca-cli][split][fixture]") {
     namespace fs = boost::filesystem;
     const auto path = fs::path(ORCA_CLI_STL_DIR) / "box_with_text.stl";
@@ -225,46 +250,57 @@ TEST_CASE("box_with_text.stl is multi-component (fixture sanity)",
 }
 ```
 
-If this test `SKIP`s or fails, every downstream split test is either skipped (missing file) or fails fast (wrong fixture). No cascading mystery failures.
+Layer A's sanity fails hard if `two_cubes.stl` is missing or wrong — it is a build artifact and must exist. Layer B's sanity `SKIP`s cleanly when absent; the realistic e2e that depends on it `SKIP`s for the same reason. Either way, no cascading mystery failures.
 
 ### Unit tests — `tests/cli/unit/test_project_ops.cpp` (extended)
 
-Tagged `[orca-cli][split]`:
+Tagged `[orca-cli][split]`. Unit tests use **Layer A's `two_cubes.stl`** for deterministic 2-component behaviour.
 
-1. `split_object_to_parts produces N volumes from N-component mesh` — add multi-component STL, call helper, assert `obj.volumes.size() >= 2`, assert names follow `X_1`, `X_2`, ... pattern.
+1. `split_object_to_parts produces N volumes from N-component mesh` — add Layer A STL, call helper, assert `obj.volumes.size() == 2`, assert names follow `X_1`, `X_2` pattern.
 2. `split_object_to_parts on single-component mesh throws invalid_argument` — call on a plain cube object (1 component), expect `REQUIRE_THROWS_AS(..., std::invalid_argument)`.
 3. `split_object_to_parts on multi-volume object throws invalid_argument` — split once successfully, then call again → expect throw.
 4. `split_object_to_parts on unknown object throws out_of_range` — exercise the `find_object_or_throw` path.
-5. `set_object_filament with part_name targets the volume's config` — after split, set `--part X_1 --filament 2`; assert `vol[0]->config.option("extruder") == 2` AND `vol[1]->config` unchanged.
-6. `set_object_filament with unknown part_name throws out_of_range` — exercise the part-not-found path.
-7. `set_object_filament without part_name still hits object-level config` — regression pin for the existing P5 behaviour.
+5. `split_object_to_parts preserves source attribution on every new volume` — Bug C defense. After split, assert every volume in the resulting object has a non-empty `source.input_file` equal to the STL path used in `add_object`, AND well-defined `source.object_idx` / `source.volume_idx`. Catches a regression where libslic3r changes the propagation behaviour or where the helper's stamping logic regresses.
+6. `set_object_filament with part_name targets the volume's config` — after split, set `--part X_1 --filament 2`; assert `vol[0]->config.option("extruder") == 2` AND `vol[1]->config` unchanged.
+7. `set_object_filament with unknown part_name throws out_of_range` — exercise the part-not-found path.
+8. `set_object_filament without part_name still hits object-level config` — regression pin for the existing P5 behaviour.
 
 ### E2E tests — new file `tests/cli/e2e/test_split.cpp`
 
-Tagged `[orca-cli][split][e2e]`:
+Tagged `[orca-cli][split][e2e]`. E2E tests use **Layer A's `two_cubes.stl`** by default; one e2e additionally exercises Layer B (`box_with_text.stl`) and `SKIP`s when absent.
 
-1. End-to-end split + per-part filament assignment — full recipe from manual-test.md Phase 8, asserts `inspect --json` shows the expected `volumes` array.
-2. Split refuses single-component object — `object split-to-parts` on the plain cube → exit 7, error message contains `"only 1 connected"`.
-3. Split refuses multi-volume object (idempotency) — split, then split again → exit 7, error message contains `"multiple volumes"`.
-4. Split refuses unknown object — exit 6.
-5. `set-filament --part` rejects unknown part name — exit 6.
-6. `--output` side-car: split writes only to side-car path; original input untouched.
+Every e2e test that produces a saved 3mf MUST run the following archive-level invariants on the output (helpers already exist in `tests/cli/archive_invariants.{hpp,cpp}` from the original design § 6.1):
+
+- **Invariant #4 (source attribution):** every `<part>` block in `Metadata/model_settings.config` carries a non-empty `source_file` attribute. Bug C class — if this fails, some Orca/Bambu GUI versions silently drop the volume on load.
+- **Invariant #5 (per-volume extruder):** after `set-filament --part Y --filament Z` on a split object, the `<part>` block for volume `Y` in `Metadata/model_settings.config` carries `extruder = Z`. Asserted in addition to (not instead of) the `inspect --json` state check.
+
+The two invariants run on every e2e test that exercises per-volume filament assignment, alongside `inspect --json` parsing.
+
+1. End-to-end split + per-part filament assignment (Layer A) — full recipe from manual-test.md Phase 8 using `two_cubes.stl`. Asserts: `inspect --json` shows the expected `volumes` array; invariant #4 on the saved 3mf; invariant #5 on the saved 3mf for each per-volume `set-filament` call.
+2. End-to-end split + per-part filament (Layer B, realistic) — same flow with `box_with_text.stl`. `SKIP`s when Layer B fixture absent. Asserts invariant #4 and #5 the same way.
+3. Split refuses single-component object — `object split-to-parts` on the plain cube → exit 7, error message contains `"only 1 connected"`.
+4. Split refuses multi-volume object (idempotency) — split, then split again → exit 7, error message contains `"multiple volumes"`.
+5. Split refuses unknown object — exit 6.
+6. `set-filament --part` rejects unknown part name — exit 6.
+7. `--output` side-car: split writes only to side-car path; original input untouched.
 
 ### Roundtrip tests — new file `tests/cli/roundtrip/test_split.cpp`
 
-Tagged `[orca-cli][split][roundtrip]`:
+Tagged `[orca-cli][split][roundtrip]`. Uses Layer A for determinism.
 
-1. Volume count survives load/save — split into N parts, save, load fresh, assert volume count and names.
-2. Per-part `extruder` survives load/save — split, assign filaments 1/2/3, save, load, assert each volume's `extruder` config equals its assigned slot.
+1. Volume count survives load/save — split into 2 parts (Layer A), save, load fresh, assert volume count and names.
+2. Per-part `extruder` survives load/save — split, assign filaments 1 and 2 to the two parts, save, load, assert each volume's `extruder` config equals its assigned slot.
 
 ### Expected test-count delta
 
-- Fixture sanity: +1
-- Unit: +7
-- E2E: +6
+- Fixture sanity: **+2** (Layer A always, Layer B conditional)
+- Unit: **+8** (added source-attribution preservation case)
+- E2E: **+7** (added Layer B realistic-mesh case)
 - Roundtrip: +2
 
-Total: 124 → 140 cases.
+Total: **124 → 143 cases** (was 140 in the original v1 spec; the +3 delta comes from the new Layer A/B sanity split, the source-attribution unit, and the Layer B e2e).
+
+Archive invariants #4 and #5 are additional assertions WITHIN existing e2e cases, not new test cases.
 
 ---
 
@@ -304,7 +340,7 @@ The feature is "done" when:
 1. `orca-cli object split-to-parts <file> --name X [--output O]` is invocable and behaves per Section 2.
 2. `orca-cli object set-filament <file> --name X --part Y --filament N [--output O]` is invocable and behaves per Section 2.
 3. `orca-cli inspect <file>` shows the `volumes` array (JSON) / block (human) per Section 1.
-4. All 16 new tests in Section 4 pass on Windows Release builds.
+4. All 19 new tests in Section 4 pass on Windows Release builds (143 total).
 5. Phase 7 cumulative recipe passes manually in OrcaSlicer (visual GUI smoke) including the appended split-to-parts step.
 6. No regression in the 124-case baseline test suite.
 7. Documentation in `docs/cli/{manual-test,status}.md` updated per Section 5.
@@ -319,6 +355,7 @@ The feature is "done" when:
 ## Spec self-review notes
 
 - **Placeholder scan:** zero TBDs / TODOs.
-- **Consistency:** Section 1's exit-code claims are consistent with Section 3's table. Section 2's behaviour matches Section 4's test expectations.
+- **Consistency:** Section 1's exit-code claims are consistent with Section 3's table. Section 2's behaviour matches Section 4's test expectations. The Layer A/B fixture distinction in Section 4 is consistent with the Phase 8 manual-test recipe in Section 5 (manual recipe uses Layer B; e2e tests primarily use Layer A).
 - **Scope:** focused on one feature with one closely-related extension (`--part` on `set-filament`). Line-width discoverability explicitly deferred.
-- **Ambiguity:** the `--part` on single-volume objects case is explicitly addressed (allowed; same effect as object-level set). The empty-`--part` case is explicitly addressed (treated as absent). The single-component split case is explicitly addressed (refuse with exit 7, not no-op).
+- **Ambiguity:** the `--part` on single-volume objects case is explicitly addressed (allowed; same effect as object-level set). The empty-`--part` case is explicitly addressed (treated as absent). The single-component split case is explicitly addressed (refuse with exit 7, not no-op). The object-level vs per-volume `extruder` interaction is explicitly addressed in Section 2 — object-level value is not cleared, per-volume value shadows it for the named volume only.
+- **Bug C class defenses:** source attribution preservation is required in Section 2 (helper must verify or stamp), unit-tested in Section 4 test #5, and asserted at archive level on every per-volume e2e via invariant #4. Three independent layers prevent regression.
