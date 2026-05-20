@@ -17,6 +17,7 @@ add_library(orca_cli_core STATIC
     commands/project_init.cpp
     commands/plate.cpp
     commands/object.cpp
+    commands/object_parse_vec3.cpp
     commands/config.cpp
     commands/inspect.cpp
 )

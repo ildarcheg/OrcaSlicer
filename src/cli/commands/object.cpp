@@ -4,6 +4,7 @@
 // via the standard exception -> ExitCode pattern. See the module-level
 // comment in src/cli/commands/plate.cpp for the rationale.
 #include "object.hpp"
+#include "object_parse_vec3.hpp"
 
 #include "../cli11/CLI11.hpp"
 #include "../invariants.hpp"
@@ -13,8 +14,6 @@
 
 #include <boost/filesystem.hpp>
 
-#include <algorithm>
-#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
@@ -28,54 +27,6 @@ namespace orca_cli::commands {
 namespace fs = boost::filesystem;
 
 namespace {
-
-// Parse a vector flag value:
-//   "x,y"     -> (x, y, 0)
-//   "x,y,z"   -> (x, y, z)
-//   "s"       -> (s, s, s)  -- only when allow_scalar is true
-// Returns std::nullopt on parse failure or if any component is non-finite.
-// Split on ',' strictly. Each comma-delimited token must be non-empty
-// (after whitespace trim) and parse to a finite double. Consecutive
-// commas / leading or trailing commas are rejected -- e.g. "60,,60"
-// is NOT silently collapsed to "60,60".
-std::optional<Slic3r::Vec3d> parse_vec3(const std::string& s, bool allow_scalar)
-{
-    if (s.empty()) return std::nullopt;
-    std::vector<double> nums;
-    std::string token;
-    auto trim = [](std::string& t) {
-        size_t a = t.find_first_not_of(" \t");
-        size_t b = t.find_last_not_of(" \t");
-        if (a == std::string::npos) t.clear();
-        else t = t.substr(a, b - a + 1);
-    };
-    auto flush = [&]() -> bool {
-        trim(token);
-        if (token.empty()) return false;
-        try {
-            size_t consumed = 0;
-            double v = std::stod(token, &consumed);
-            if (consumed != token.size())   return false;
-            if (!std::isfinite(v))          return false;
-            nums.push_back(v);
-        } catch (...) { return false; }
-        token.clear();
-        return true;
-    };
-    for (char ch : s) {
-        if (ch == ',') {
-            if (!flush()) return std::nullopt;
-        } else {
-            token.push_back(ch);
-        }
-    }
-    if (!flush()) return std::nullopt;
-
-    if (allow_scalar && nums.size() == 1) return Slic3r::Vec3d(nums[0], nums[0], nums[0]);
-    if (nums.size() == 2) return Slic3r::Vec3d(nums[0], nums[1], 0.0);
-    if (nums.size() == 3) return Slic3r::Vec3d(nums[0], nums[1], nums[2]);
-    return std::nullopt;
-}
 
 int do_object_add(const GlobalOpts& g,
                   const std::string& file,
@@ -103,54 +54,41 @@ int do_object_add(const GlobalOpts& g,
     // usage_error before we touch the archive. CLI11 leaves the strings
     // empty when the flag wasn't supplied.
     std::optional<Slic3r::Vec3d> translate, rotate, scale;
+
+    // --translate: 2 or 3 components.
     if (!translate_str.empty()) {
-        translate = parse_vec3(translate_str, /*allow_scalar=*/false);
-        if (!translate) {
+        auto r = parse_vec3(translate_str);
+        if (!r || (r->component_count != 2 && r->component_count != 3)) {
             print_err(g, ExitCode::usage_error,
                       "invalid --translate value '" + translate_str +
                       "' (expected x,y or x,y,z)");
             return int(ExitCode::usage_error);
         }
+        translate = r->values;
     }
+
+    // --rotate: exactly 3 components.
     if (!rotate_str.empty()) {
-        rotate = parse_vec3(rotate_str, /*allow_scalar=*/false);
-        // --rotate requires all three components; reject the 2-component
-        // form parse_vec3 would otherwise accept.
-        bool ok = rotate.has_value();
-        if (ok) {
-            // Re-parse to check the original had 3 comma-separated parts.
-            int commas = 0;
-            for (char c : rotate_str) if (c == ',') ++commas;
-            if (commas != 2) ok = false;
-        }
-        if (!ok) {
+        auto r = parse_vec3(rotate_str);
+        if (!r || r->component_count != 3) {
             print_err(g, ExitCode::usage_error,
                       "invalid --rotate value '" + rotate_str +
                       "' (expected ax,ay,az in radians)");
             return int(ExitCode::usage_error);
         }
+        rotate = r->values;
     }
+
+    // --scale: scalar (1 component) or 3 components.
     if (!scale_str.empty()) {
-        // --scale accepts either a uniform scalar (0 commas) or all three
-        // components (2 commas). Reject the 2-component form explicitly:
-        // parse_vec3(..., allow_scalar=true) would otherwise accept "1,2"
-        // as (1,2,0), and set_scaling_factor((1,2,0)) silently collapses
-        // the object to a Z=0 sheet -- the off-bed check only inspects
-        // X/Y bounds and doesn't catch it.
-        int commas = int(std::count(scale_str.begin(), scale_str.end(), ','));
-        if (commas != 0 && commas != 2) {
+        auto r = parse_vec3(scale_str);
+        if (!r || (r->component_count != 1 && r->component_count != 3)) {
             print_err(g, ExitCode::usage_error,
                       "invalid --scale value '" + scale_str +
                       "' (expected s or sx,sy,sz)");
             return int(ExitCode::usage_error);
         }
-        scale = parse_vec3(scale_str, /*allow_scalar=*/true);
-        if (!scale) {
-            print_err(g, ExitCode::usage_error,
-                      "invalid --scale value '" + scale_str +
-                      "' (expected s or sx,sy,sz)");
-            return int(ExitCode::usage_error);
-        }
+        scale = r->values;
     }
 
     const std::string out = resolve_save_target(g, file);
