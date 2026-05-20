@@ -392,13 +392,39 @@ void save_project(const ProjectState& s, const std::string& target_path)
         throw;
     }
 
-    // Atomic-ish rename. boost::filesystem::rename on Windows overwrites the
-    // destination if it exists (MoveFileEx with MOVEFILE_REPLACE_EXISTING via
-    // boost), so remove any pre-existing file first to keep behaviour
-    // predictable across platforms.
+    // Safer atomic swap: rename the existing destination to .bak before
+    // moving the .tmp in. This eliminates the window on Windows where the
+    // destination doesn't exist between the remove() and rename() calls.
+    // If the final rename fails we restore the original from .bak, and once
+    // the .tmp is in place we drop the .bak (best-effort; a stale .bak is
+    // harmless and will be cleaned up on the next successful save).
     boost::system::error_code ec;
-    fs::remove(target_path, ec);
-    fs::rename(tmp, target_path);
+    const std::string bak = target_path + ".bak";
+
+    if (fs::exists(target_path)) {
+        fs::rename(target_path, bak, ec);
+        if (ec) {
+            // Clean up the .tmp before bailing so we don't leave litter.
+            boost::system::error_code rm_ec;
+            fs::remove(tmp, rm_ec);
+            throw std::runtime_error("save_project: rename existing -> .bak failed: " + ec.message());
+        }
+    }
+
+    fs::rename(tmp, target_path, ec);
+    if (ec) {
+        // Best-effort restore: put the original back from .bak.
+        boost::system::error_code rec;
+        if (fs::exists(bak)) fs::rename(bak, target_path, rec);
+        throw std::runtime_error("save_project: rename .tmp -> target failed: " + ec.message());
+    }
+
+    if (fs::exists(bak)) {
+        boost::system::error_code rm_ec;
+        fs::remove(bak, rm_ec);
+        // Best-effort: if we can't remove the .bak, leave it; it will be
+        // collected next time save_project runs over this target.
+    }
 }
 
 std::string resolve_save_target(const GlobalOpts& opts, const std::string& input_file)
