@@ -1165,3 +1165,109 @@ TEST_CASE("merge_object_parts excludes empty sources from filament "
     REQUIRE(obj2->volumes.size() == 1);
     REQUIRE(effective_extruder(*obj2, *obj2->volumes[0]) == 1);
 }
+
+TEST_CASE("merge_object_parts inherits per-vol config when sources agree "
+          "(test #10)",
+          "[orca-cli][merge][unit]") {
+    namespace fs = boost::filesystem;
+    using namespace orca_cli;
+    using namespace Slic3r;
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped: no reference 3mf"); return; }
+    auto s = load_project(orca_cli_test::ref_3mf().string());
+    AddObjectParams p;
+    p.plate_name  = s.plates.front()->plate_name;
+    p.stl_path    = (fs::path(ORCA_CLI_FIXTURES_DIR) / "two_cubes.stl").string();
+    p.object_name = "merge_cfg_agree";
+    p.count       = 1;
+    REQUIRE_NOTHROW(add_object(s, p));
+    REQUIRE_NOTHROW(split_object_to_parts(s, "merge_cfg_agree"));
+
+    // Both sources carry wall_loops=4.
+    ModelObject* obj = find_object(s, "merge_cfg_agree");
+    REQUIRE(obj != nullptr);
+    REQUIRE(obj->volumes.size() == 2);
+    obj->volumes[0]->config.set("wall_loops", 4);
+    obj->volumes[1]->config.set("wall_loops", 4);
+
+    REQUIRE_NOTHROW(merge_object_parts(s, "merge_cfg_agree",
+        {"merge_cfg_agree_1", "merge_cfg_agree_2"},
+        "merge_cfg_agree_main", std::nullopt));
+
+    auto* obj2 = find_object(s, "merge_cfg_agree");
+    REQUIRE(obj2 != nullptr);
+    REQUIRE(obj2->volumes.size() == 1);
+    auto* wl = obj2->volumes[0]->config.get().opt<ConfigOptionInt>("wall_loops");
+    REQUIRE(wl != nullptr);
+    REQUIRE(wl->value == 4);
+}
+
+TEST_CASE("merge_object_parts refuses per-vol config conflict between "
+          "carriers (case 14 -> invalid_state, test #11)",
+          "[orca-cli][merge][unit]") {
+    namespace fs = boost::filesystem;
+    using namespace orca_cli;
+    using namespace Slic3r;
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped: no reference 3mf"); return; }
+    auto s = load_project(orca_cli_test::ref_3mf().string());
+    AddObjectParams p;
+    p.plate_name  = s.plates.front()->plate_name;
+    p.stl_path    = (fs::path(ORCA_CLI_FIXTURES_DIR) / "two_cubes.stl").string();
+    p.object_name = "merge_cfg_conflict";
+    p.count       = 1;
+    REQUIRE_NOTHROW(add_object(s, p));
+    REQUIRE_NOTHROW(split_object_to_parts(s, "merge_cfg_conflict"));
+
+    ModelObject* obj = find_object(s, "merge_cfg_conflict");
+    REQUIRE(obj != nullptr);
+    REQUIRE(obj->volumes.size() == 2);
+    obj->volumes[0]->config.set("wall_loops", 4);
+    obj->volumes[1]->config.set("wall_loops", 7);
+
+    try {
+        merge_object_parts(s, "merge_cfg_conflict",
+            {"merge_cfg_conflict_1", "merge_cfg_conflict_2"},
+            "merge_cfg_conflict_main", std::nullopt);
+        FAIL("expected std::invalid_argument");
+    } catch (const std::invalid_argument& e) {
+        std::string msg(e.what());
+        INFO("error message: " << msg);
+        REQUIRE(msg.find("wall_loops") != std::string::npos);
+    }
+}
+
+TEST_CASE("merge_object_parts strict rule rejects mixed carry/no-carry "
+          "(test #17)",
+          "[orca-cli][merge][unit]") {
+    namespace fs = boost::filesystem;
+    using namespace orca_cli;
+    using namespace Slic3r;
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped: no reference 3mf"); return; }
+    auto s = load_project(orca_cli_test::ref_3mf().string());
+    AddObjectParams p;
+    p.plate_name  = s.plates.front()->plate_name;
+    p.stl_path    = (fs::path(ORCA_CLI_FIXTURES_DIR) / "two_cubes.stl").string();
+    p.object_name = "merge_cfg_mixed";
+    p.count       = 1;
+    REQUIRE_NOTHROW(add_object(s, p));
+    REQUIRE_NOTHROW(split_object_to_parts(s, "merge_cfg_mixed"));
+
+    // Source 1 carries wall_loops=5; source 2 does NOT carry the key.
+    // Object-level wall_loops=3. Strict rule rejects mixed carry.
+    ModelObject* obj = find_object(s, "merge_cfg_mixed");
+    REQUIRE(obj != nullptr);
+    REQUIRE(obj->volumes.size() == 2);
+    obj->config.set("wall_loops", 3);
+    obj->volumes[0]->config.set("wall_loops", 5);
+    // obj->volumes[1] deliberately left without the key.
+
+    try {
+        merge_object_parts(s, "merge_cfg_mixed",
+            {"merge_cfg_mixed_1", "merge_cfg_mixed_2"},
+            "merge_cfg_mixed_main", std::nullopt);
+        FAIL("expected std::invalid_argument");
+    } catch (const std::invalid_argument& e) {
+        std::string msg(e.what());
+        INFO("error message: " << msg);
+        REQUIRE(msg.find("wall_loops") != std::string::npos);
+    }
+}

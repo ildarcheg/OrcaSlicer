@@ -11,6 +11,7 @@
 #include <boost/filesystem.hpp>
 
 #include <algorithm>
+#include <map>
 #include <set>
 #include <stdexcept>
 #include <unordered_set>
@@ -802,6 +803,74 @@ void merge_object_parts(ProjectState& s,
             "or pass '--filament N' to merge-parts.");
     }
 
+    // Section 3 precedence step 8: per-volume non-extruder config
+    // agreement (case 14, strict rule per spec Q6).
+    //
+    // For every per-volume key that appears on any non-empty source:
+    //   * all non-empty sources carry the key with the same value -> inherit
+    //   * none of the non-empty sources carry the key            -> drop
+    //   * any other mix (some carry, some don't, or values differ) -> refuse
+    //
+    // Empty sources are already excluded (non_empty_indices). Stash
+    // the agreed serializations into a function-scope map so the
+    // merged-volume construction below can apply them after the bake-in.
+    // This block sits AFTER the filament-agreement block from step 7 so
+    // the validation order matches Section 3's deterministic precedence:
+    // step 7 fires before step 8.
+    std::map<std::string, std::string> agreed_per_vol_config;
+    {
+        std::set<std::string> all_keys;
+        for (size_t idx : non_empty_indices) {
+            for (const auto& key : obj.volumes[idx]->config.keys()) {
+                all_keys.insert(key);
+            }
+        }
+        all_keys.erase("extruder"); // handled separately above
+
+        std::vector<std::string> conflicts;
+        for (const auto& key : all_keys) {
+            int carrier_count = 0;
+            std::vector<std::string> carrier_values;
+            for (size_t idx : non_empty_indices) {
+                if (obj.volumes[idx]->config.has(key)) {
+                    ++carrier_count;
+                    carrier_values.push_back(obj.volumes[idx]->config.opt_serialize(key));
+                }
+            }
+            const int n = static_cast<int>(non_empty_indices.size());
+            if (carrier_count == 0) {
+                // Nobody carries -- skip (shouldn't happen: key came from a carrier).
+                continue;
+            } else if (carrier_count == n) {
+                // All carry -- must agree.
+                const auto& first = carrier_values.front();
+                const bool same = std::all_of(carrier_values.begin(),
+                                              carrier_values.end(),
+                    [&](const std::string& s) { return s == first; });
+                if (same) {
+                    agreed_per_vol_config[key] = first;
+                } else {
+                    conflicts.push_back(key);
+                }
+            } else {
+                // Mixed carry / no-carry -- strict rule rejects.
+                conflicts.push_back(key);
+            }
+        }
+        if (!conflicts.empty()) {
+            std::string msg = "cannot merge: per-volume config keys "
+                              "diverge across sources: ";
+            for (size_t i = 0; i < conflicts.size(); ++i) {
+                if (i > 0) msg += ", ";
+                msg += conflicts[i];
+            }
+            msg += ". To merge, set the per-volume value on all source "
+                   "parts first via 'config set --object X --part Y "
+                   "--key K --value V', then retry.";
+            throw std::invalid_argument(msg);
+        }
+    }
+
     // Bake-in transform + concat. Anchor = lowest existing index among
     // NON-EMPTY sources. An empty source has no geometry to anchor and
     // would produce a confusing inspect-output if it stole the slot.
@@ -831,6 +900,14 @@ void merge_object_parts(ProjectState& s,
     merged->set_transformation(Geometry::Transformation());
     merged->source = anchor_source;
     merged->config.set("extruder", merged_extruder);
+
+    // Apply agreed per-volume config keys (strict rule, Section 3 step 8).
+    // set_deserialize matches the idiom used by set_object_config.
+    for (const auto& kv : agreed_per_vol_config) {
+        Slic3r::ConfigSubstitutionContext subs(
+            Slic3r::ForwardCompatibilitySubstitutionRule::Disable);
+        merged->config.set_deserialize(kv.first, kv.second, subs);
+    }
 
     // obj.add_volume pushed `merged` to the end of obj.volumes. Move it
     // to the anchor position, then erase the old anchor + the other
