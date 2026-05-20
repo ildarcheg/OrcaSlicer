@@ -348,6 +348,13 @@ void set_object_filament(ProjectState& s, const std::string& object_name, int fi
 // for user-supplied values -- accepting silently-substituted enums on
 // the CLI would defeat the bad_config exit code).
 
+int filament_slot_count(const Slic3r::DynamicPrintConfig& cfg) {
+    using namespace Slic3r;
+    if (auto* fsid = cfg.option<ConfigOptionStrings>("filament_settings_id"))
+        return std::max(1, int(fsid->values.size()));
+    return 1;
+}
+
 namespace {
 
 void validate_key_exists(const std::string& key)
@@ -394,15 +401,6 @@ int classify_key_slot(const std::string& key, int /*filament_count*/)
     return 0;
 }
 
-// Reads filament count from filament_settings_id, defaulting to 1.
-int filament_count_of(const Slic3r::DynamicPrintConfig& cfg)
-{
-    using namespace Slic3r;
-    if (auto* fsid = cfg.option<ConfigOptionStrings>("filament_settings_id"))
-        return std::max(1, int(fsid->values.size()));
-    return 1;
-}
-
 // Returns the diff option sized to (filament_count + 2) slots, creating the
 // option if missing.
 Slic3r::ConfigOptionStrings* get_or_create_diff_settings(
@@ -437,7 +435,7 @@ void remove_key_from_slot(Slic3r::ConfigOptionStrings* diff, int slot, const std
 
 void mark_project_key_dirty(ProjectState& s, const std::string& key)
 {
-    int fc = filament_count_of(*s.project_config);
+    int fc = filament_slot_count(*s.project_config);
     auto* diff = get_or_create_diff_settings(*s.project_config, fc);
     int slot = classify_key_slot(key, fc);
     if (slot == -2) {
@@ -450,7 +448,7 @@ void mark_project_key_dirty(ProjectState& s, const std::string& key)
 
 void unmark_project_key_dirty(ProjectState& s, const std::string& key)
 {
-    int fc = filament_count_of(*s.project_config);
+    int fc = filament_slot_count(*s.project_config);
     auto* diff = s.project_config->option<Slic3r::ConfigOptionStrings>("different_settings_to_system");
     if (!diff) return;
     if (int(diff->values.size()) < fc + 2) return;

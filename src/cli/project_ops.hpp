@@ -237,6 +237,10 @@ void unset_project_config(ProjectState& s, const std::string& key);
 void unset_object_config(ProjectState& s, const std::string& object_name,
                          const std::string& key);
 
+// Number of filament slots configured in the project (the size of the
+// filament_settings_id ConfigOptionStrings; min-clamped to 1).
+int filament_slot_count(const Slic3r::DynamicPrintConfig& cfg);
+
 // Returns the project-level keys whose values differ from the libslic3r
 // defaults for those keys. Implemented via DynamicPrintConfig::diff against
 // new_from_defaults_keys (spec G6: avoid default_value->serialize() which

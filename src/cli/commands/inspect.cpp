@@ -13,7 +13,6 @@
 #include "../project_ops.hpp"
 
 #include <libslic3r/Model.hpp>
-#include <libslic3r/PrintConfig.hpp>
 #include <libslic3r/Format/bbs_3mf.hpp>
 
 #include <cstdio>
@@ -26,14 +25,6 @@
 namespace orca_cli::commands {
 
 namespace {
-
-int filament_slot_count(const ProjectState& state)
-{
-    if (!state.project_config) return 0;
-    const auto* fsid = state.project_config->option<Slic3r::ConfigOptionStrings>(
-        "filament_settings_id");
-    return fsid ? int(fsid->values.size()) : 0;
-}
 
 int do_inspect(const GlobalOpts& g, const std::string& file)
 {
@@ -57,7 +48,7 @@ int do_inspect(const GlobalOpts& g, const std::string& file)
     }
 
     const int plate_count = int(state.plates.size());
-    const int filament_count = filament_slot_count(state);
+    const int filament_count = orca_cli::filament_slot_count(*state.project_config);
 
     // Project-level keys that differ from libslic3r defaults. P6's
     // changed_project_keys takes the defaults via new_from_defaults_keys

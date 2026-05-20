@@ -571,3 +571,9 @@ TEST_CASE("find_object_or_throw throws on missing", "[orca-cli][cleanup][T2]") {
     ProjectState s = load_project(ORCA_CLI_REF_3MF);
     REQUIRE_THROWS_AS(find_object_or_throw(s, "__nope__"), std::out_of_range);
 }
+
+TEST_CASE("filament_slot_count >= 1 on reference", "[orca-cli][cleanup][T3]") {
+    using namespace orca_cli;
+    ProjectState s = load_project(ORCA_CLI_REF_3MF);
+    REQUIRE(filament_slot_count(*s.project_config) >= 1);
+}
