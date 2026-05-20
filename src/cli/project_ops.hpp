@@ -70,6 +70,17 @@ struct ProjectState {
     }
 };
 
+// Look up a ModelObject by exact name. Returns nullptr if no object
+// matches; const overload provided for read-only inspection paths.
+Slic3r::ModelObject*       find_object(ProjectState& s,       const std::string& name);
+const Slic3r::ModelObject* find_object(const ProjectState& s, const std::string& name);
+
+// Same as find_object, but throws std::out_of_range when missing — used
+// by mutation paths whose contract is "fail loud" so the command catch
+// chain can map to ExitCode::unknown_reference.
+Slic3r::ModelObject&       find_object_or_throw(ProjectState& s,       const std::string& name);
+const Slic3r::ModelObject& find_object_or_throw(const ProjectState& s, const std::string& name);
+
 // --------------------------------------------------------------------------
 // Plate mutations (P2).
 //

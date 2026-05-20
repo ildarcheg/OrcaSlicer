@@ -54,13 +54,6 @@ std::string object_value(const Slic3r::ModelObject& obj, const std::string& key)
     return obj.config.opt_serialize(key);
 }
 
-const Slic3r::ModelObject* find_object(const ProjectState& s, const std::string& name)
-{
-    for (auto* o : s.model->objects)
-        if (o->name == name) return o;
-    return nullptr;
-}
-
 // -- config set ------------------------------------------------------------
 
 int do_config_set(const GlobalOpts& g,

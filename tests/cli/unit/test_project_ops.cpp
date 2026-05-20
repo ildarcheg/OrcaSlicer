@@ -557,3 +557,17 @@ TEST_CASE("check_input_exists returns file_not_found for missing path", "[orca-c
     int rc = orca_cli::check_input_exists(g, "C:/this/path/does/not/exist.3mf");
     REQUIRE(rc == int(orca_cli::ExitCode::file_not_found));
 }
+
+// -- T2: find_object (M9) --------------------------------------------------
+
+TEST_CASE("find_object returns nullptr when missing", "[orca-cli][cleanup][T2]") {
+    using namespace orca_cli;
+    ProjectState s = load_project(ORCA_CLI_REF_3MF);
+    REQUIRE(find_object(s, "__nope__") == nullptr);
+}
+
+TEST_CASE("find_object_or_throw throws on missing", "[orca-cli][cleanup][T2]") {
+    using namespace orca_cli;
+    ProjectState s = load_project(ORCA_CLI_REF_3MF);
+    REQUIRE_THROWS_AS(find_object_or_throw(s, "__nope__"), std::out_of_range);
+}

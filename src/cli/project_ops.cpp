@@ -17,6 +17,26 @@
 
 namespace orca_cli {
 
+Slic3r::ModelObject* find_object(ProjectState& s, const std::string& name) {
+    for (auto* o : s.model->objects) if (o->name == name) return o;
+    return nullptr;
+}
+
+const Slic3r::ModelObject* find_object(const ProjectState& s, const std::string& name) {
+    for (const auto* o : s.model->objects) if (o->name == name) return o;
+    return nullptr;
+}
+
+Slic3r::ModelObject& find_object_or_throw(ProjectState& s, const std::string& name) {
+    if (auto* o = find_object(s, name)) return *o;
+    throw std::out_of_range("object not found: " + name);
+}
+
+const Slic3r::ModelObject& find_object_or_throw(const ProjectState& s, const std::string& name) {
+    if (auto* o = find_object(s, name)) return *o;
+    throw std::out_of_range("object not found: " + name);
+}
+
 void add_plate(ProjectState& s, const std::string& name)
 {
     for (auto& p : s.plates) {
@@ -284,12 +304,7 @@ void set_object_filament(ProjectState& s, const std::string& object_name, int fi
     using namespace Slic3r;
 
     // Locate the named ModelObject.
-    ModelObject* obj = nullptr;
-    for (auto* o : s.model->objects) {
-        if (o->name == object_name) { obj = o; break; }
-    }
-    if (!obj)
-        throw std::out_of_range("object not found: " + object_name);
+    ModelObject& obj = find_object_or_throw(s, object_name);
 
     // Determine the legal slot range from the project's filament_settings_id.
     // This is a ConfigOptionStrings whose .values.size() is the number of
@@ -314,7 +329,7 @@ void set_object_filament(ProjectState& s, const std::string& object_name, int fi
     // model-config timestamp. This is the same call-site shape used by the
     // GUI's MMU and "set extruder" paths (see GUI_ObjectList.cpp:2819,
     // ObjColorDialog.cpp:441) and by libslic3r itself in Model.cpp:3066.
-    obj->config.set("extruder", filament_slot);
+    obj.config.set("extruder", filament_slot);
 }
 
 // --------------------------------------------------------------------------
@@ -325,8 +340,8 @@ void set_object_filament(ProjectState& s, const std::string& object_name, int fi
 //     print_config_def. Used by all four set/unset helpers so a typo
 //     surfaces consistently as exit 4 rather than landing in
 //     ModelConfig::set_deserialize's "create a junk entry" path.
-//   * find_object: linear lookup by name; throws std::out_of_range with
-//     the same wording other commands use ("object not found: <name>").
+//   * find_object / find_object_or_throw: centralised in project_ops.cpp
+//     at namespace scope (not anonymous) so all callers share one lookup.
 //
 // set_*: delegate the value parse to libslic3r's set_deserialize via a
 // ConfigSubstitutionContext built with Disable (we want strict parsing
@@ -339,15 +354,6 @@ void validate_key_exists(const std::string& key)
 {
     if (!Slic3r::print_config_def.has(key))
         throw BadConfigError("unknown config key: " + key);
-}
-
-Slic3r::ModelObject* find_object_or_throw(ProjectState&      s,
-                                          const std::string& object_name)
-{
-    for (auto* o : s.model->objects) {
-        if (o->name == object_name) return o;
-    }
-    throw std::out_of_range("object not found: " + object_name);
 }
 
 // --------------------------------------------------------------------------
@@ -484,14 +490,14 @@ void set_object_config(ProjectState& s, const std::string& object_name,
 {
     using namespace Slic3r;
     validate_key_exists(key);
-    ModelObject* obj = find_object_or_throw(s, object_name);
+    ModelObject& obj = find_object_or_throw(s, object_name);
 
     ConfigSubstitutionContext ctx(ForwardCompatibilitySubstitutionRule::Disable);
     try {
         // ModelConfigObject::set_deserialize bumps the model-config
         // timestamp on write -- same path the GUI uses when a per-object
         // setting changes through the settings panel.
-        obj->config.set_deserialize(key, value, ctx);
+        obj.config.set_deserialize(key, value, ctx);
     } catch (const std::exception& e) {
         throw BadConfigError("invalid value for '" + key + "': " + e.what());
     }
@@ -515,8 +521,8 @@ void unset_object_config(ProjectState& s, const std::string& object_name,
                          const std::string& key)
 {
     validate_key_exists(key);
-    Slic3r::ModelObject* obj = find_object_or_throw(s, object_name);
-    obj->config.erase(key);
+    Slic3r::ModelObject& obj = find_object_or_throw(s, object_name);
+    obj.config.erase(key);
 }
 
 std::vector<std::string> changed_project_keys(const ProjectState& s)
@@ -536,15 +542,11 @@ std::vector<std::string> changed_project_keys(const ProjectState& s)
 std::vector<std::string> object_config_keys(const ProjectState& s,
                                             const std::string& object_name)
 {
-    Slic3r::ModelObject* obj = nullptr;
-    for (auto* o : s.model->objects) {
-        if (o->name == object_name) { obj = o; break; }
-    }
-    if (!obj) throw std::out_of_range("object not found: " + object_name);
+    const auto& obj = find_object_or_throw(s, object_name);
     // ModelConfig only ever holds the explicitly-set keys (the GUI
     // populates it lazily as the user touches settings), so this list IS
     // the change set -- no diff needed.
-    return obj->config.keys();
+    return obj.config.keys();
 }
 
 void remove_object(ProjectState& s, const std::string& object_name)
