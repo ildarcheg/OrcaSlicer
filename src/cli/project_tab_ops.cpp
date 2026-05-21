@@ -2,8 +2,11 @@
 #include "project_tab_ops.hpp"
 #include <algorithm>
 #include <fstream>
+#include <iomanip>
+#include <sstream>
 #include <stdexcept>
 
+#include <boost/filesystem.hpp>
 #include <boost/system/error_code.hpp>
 
 namespace orca_cli {
@@ -114,6 +117,12 @@ void aux_remove(ProjectState&, AuxFolder, const std::string&)        { throw std
 void aux_export(const ProjectState&, AuxFolder, const std::string&,
                 const boost::filesystem::path&)                      { throw std::logic_error("not implemented"); }
 
+namespace {
+constexpr const char* kCoverPath   = "Auxiliaries/.thumbnails/thumbnail_3mf.png";
+constexpr const char* kCoverSubdir = ".thumbnails";
+constexpr const char* kCoverName   = "thumbnail_3mf.png";
+} // namespace
+
 bool is_png(const boost::filesystem::path& p) {
     boost::system::error_code ec;
     if (!boost::filesystem::is_regular_file(p, ec)) return false;
@@ -127,8 +136,54 @@ bool is_png(const boost::filesystem::path& p) {
         if (buf[i] != kPngSig[i]) return false;
     return true;
 }
-void embed_cover_image(ProjectState&, const boost::filesystem::path&,
-                       CoverTarget)                                  { throw std::logic_error("not implemented"); }
+
+void embed_cover_image(ProjectState&                  s,
+                       const boost::filesystem::path& src,
+                       CoverTarget                    target)
+{
+    if (!is_png(src)) {
+        // Surface a useful diagnostic. Read up to 8 bytes for the hex prefix.
+        std::string prefix = "<unreadable>";
+        std::ifstream f(src.string(), std::ios::binary);
+        if (f) {
+            unsigned char buf[8] = {};
+            f.read(reinterpret_cast<char*>(buf), 8);
+            auto n = static_cast<std::size_t>(f.gcount());
+            std::ostringstream os; os << std::hex << std::uppercase
+                                      << std::setfill('0');
+            for (std::size_t i = 0; i < n; ++i)
+                os << std::setw(2) << static_cast<int>(buf[i])
+                   << (i + 1 == n ? "" : " ");
+            prefix = os.str();
+        }
+        throw BadCoverImage("not a valid PNG (expected signature 89 50 4E 47 "
+                            "0D 0A 1A 0A; got [" + prefix + "]) at: "
+                            + src.string());
+    }
+
+    auto aux = boost::filesystem::path(s.model->get_auxiliary_file_temp_path());
+    auto subdir = aux / kCoverSubdir;
+    boost::system::error_code ec;
+    boost::filesystem::create_directories(subdir, ec);
+    if (ec) throw BadCoverImage("failed to prepare cover dir " + subdir.string()
+                                + ": " + ec.message());
+
+    auto landed = subdir / kCoverName;
+    boost::filesystem::copy_file(src, landed,
+        boost::filesystem::copy_options::overwrite_existing, ec);
+    if (ec) throw BadCoverImage("failed to copy cover image: " + ec.message());
+
+    if (target == CoverTarget::Info) {
+        if (!s.model->model_info)
+            s.model->model_info = std::make_shared<Slic3r::ModelInfo>();
+        s.model->model_info->cover_file = kCoverPath;
+    } else {
+        if (!s.model->profile_info)
+            s.model->profile_info = std::make_shared<Slic3r::ModelProfileInfo>();
+        s.model->profile_info->ProfileCover = kCoverPath;
+    }
+}
+
 void clear_cover_image(ProjectState&, CoverTarget)                   { throw std::logic_error("not implemented"); }
 
 std::string sanitize_aux_name(const std::string&)                    { throw std::logic_error("not implemented"); }

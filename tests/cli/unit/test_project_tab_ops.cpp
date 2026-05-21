@@ -208,3 +208,136 @@ TEST_CASE("orca-cli: is_png returns false on missing file (no throw)",
     auto p = orca_cli_test::make_temp_dir() / "does_not_exist.png";
     REQUIRE_FALSE(is_png(p));
 }
+
+namespace {
+// Test helper: write a valid 1x1 transparent PNG to `p`. Returns the bytes
+// written so tests can byte-compare after roundtrip.
+inline std::vector<unsigned char> write_tiny_png(const boost::filesystem::path& p) {
+    static const unsigned char kPng[] = {
+        0x89,0x50,0x4E,0x47,0x0D,0x0A,0x1A,0x0A,
+        0x00,0x00,0x00,0x0D,0x49,0x48,0x44,0x52,
+        0x00,0x00,0x00,0x01,0x00,0x00,0x00,0x01,
+        0x08,0x06,0x00,0x00,0x00,0x1F,0x15,0xC4,
+        0x89,0x00,0x00,0x00,0x0D,0x49,0x44,0x41,
+        0x54,0x78,0x9C,0x63,0x00,0x01,0x00,0x00,
+        0x05,0x00,0x01,0x0D,0x0A,0x2D,0xB4,0x00,
+        0x00,0x00,0x00,0x49,0x45,0x4E,0x44,0xAE,
+        0x42,0x60,0x82,
+    };
+    std::ofstream f(p.string(), std::ios::binary);
+    f.write(reinterpret_cast<const char*>(kPng), sizeof(kPng));
+    return std::vector<unsigned char>(kPng, kPng + sizeof(kPng));
+}
+
+inline std::vector<unsigned char> read_all(const boost::filesystem::path& p) {
+    std::ifstream f(p.string(), std::ios::binary);
+    return std::vector<unsigned char>(std::istreambuf_iterator<char>(f),
+                                      std::istreambuf_iterator<char>{});
+}
+} // namespace
+
+TEST_CASE("orca-cli: embed_cover_image accepts PNG and points info cover_file at canonical path",
+          "[orca-cli][project-tab][unit]")
+{
+    auto tmp = orca_cli_test::make_temp_dir();
+    auto src = tmp / "hero.png";
+    auto bytes = write_tiny_png(src);
+
+    auto s = make_empty_state();
+    embed_cover_image(s, src, CoverTarget::Info);
+
+    REQUIRE(s.model->model_info != nullptr);
+    REQUIRE(s.model->model_info->cover_file
+            == "Auxiliaries/.thumbnails/thumbnail_3mf.png");
+
+    auto aux = boost::filesystem::path(s.model->get_auxiliary_file_temp_path());
+    auto landed = aux / ".thumbnails" / "thumbnail_3mf.png";
+    REQUIRE(boost::filesystem::exists(landed));
+    REQUIRE(read_all(landed) == bytes);
+}
+
+TEST_CASE("orca-cli: embed_cover_image profile target sets ProfileCover and reuses canonical path",
+          "[orca-cli][project-tab][unit]")
+{
+    auto tmp = orca_cli_test::make_temp_dir();
+    auto src = tmp / "hero.png";
+    write_tiny_png(src);
+
+    auto s = make_empty_state();
+    embed_cover_image(s, src, CoverTarget::Profile);
+
+    REQUIRE(s.model->profile_info != nullptr);
+    REQUIRE(s.model->profile_info->ProfileCover
+            == "Auxiliaries/.thumbnails/thumbnail_3mf.png");
+}
+
+TEST_CASE("orca-cli: embed_cover_image second call overwrites canonical file bytes",
+          "[orca-cli][project-tab][unit]")
+{
+    auto tmp = orca_cli_test::make_temp_dir();
+    auto a = tmp / "a.png"; auto bytes_a = write_tiny_png(a);
+    auto b = tmp / "b.png";
+    // Make b a distinct PNG: copy a's bytes, then bump one byte in the IDAT
+    // payload zone (bytes 41-53 are the deflated image data; index 50 is
+    // a safe tweak that keeps the file size constant -- we don't decode it).
+    {
+        auto bytes_b_src = bytes_a;
+        bytes_b_src[50] ^= 0x7F;
+        std::ofstream f(b.string(), std::ios::binary);
+        f.write(reinterpret_cast<const char*>(bytes_b_src.data()),
+                bytes_b_src.size());
+    }
+    auto bytes_b = read_all(b);
+    REQUIRE(bytes_a != bytes_b);   // pre-condition guard
+
+    auto s = make_empty_state();
+    embed_cover_image(s, a, CoverTarget::Info);
+    embed_cover_image(s, b, CoverTarget::Profile);  // overwrites a's bytes
+
+    auto aux = boost::filesystem::path(s.model->get_auxiliary_file_temp_path());
+    auto landed = aux / ".thumbnails" / "thumbnail_3mf.png";
+    REQUIRE(read_all(landed) == bytes_b);
+    REQUIRE(s.model->model_info->cover_file
+            == "Auxiliaries/.thumbnails/thumbnail_3mf.png");
+    REQUIRE(s.model->profile_info->ProfileCover
+            == "Auxiliaries/.thumbnails/thumbnail_3mf.png");
+}
+
+TEST_CASE("orca-cli: embed_cover_image rejects JPG with BadCoverImage",
+          "[orca-cli][project-tab][unit]")
+{
+    auto tmp = orca_cli_test::make_temp_dir();
+    auto jpg = tmp / "fake.png";  // .png extension, JPG bytes
+    {
+        std::ofstream f(jpg.string(), std::ios::binary);
+        const unsigned char sig[16] = {
+            0xFF,0xD8,0xFF,0xE0,0x00,0x10,0x4A,0x46,
+            0x49,0x46,0x00,0x01,0x01,0x00,0x00,0x01,
+        };
+        f.write(reinterpret_cast<const char*>(sig), 16);
+    }
+    auto s = make_empty_state();
+    REQUIRE_THROWS_AS(embed_cover_image(s, jpg, CoverTarget::Info), BadCoverImage);
+    REQUIRE(s.model->model_info == nullptr);  // not allocated on failure
+}
+
+TEST_CASE("orca-cli: embed_cover_image rejects missing source with BadCoverImage",
+          "[orca-cli][project-tab][unit]")
+{
+    auto tmp = orca_cli_test::make_temp_dir();
+    auto missing = tmp / "nope.png";
+    auto s = make_empty_state();
+    REQUIRE_THROWS_AS(embed_cover_image(s, missing, CoverTarget::Info), BadCoverImage);
+}
+
+TEST_CASE("orca-cli: info_set --cover routes through embed_cover_image",
+          "[orca-cli][project-tab][unit]")
+{
+    auto tmp = orca_cli_test::make_temp_dir();
+    auto src = tmp / "via.png"; write_tiny_png(src);
+    auto s = make_empty_state();
+    InfoSetParams p; p.cover = src;
+    info_set(s, p);
+    REQUIRE(s.model->model_info->cover_file
+            == "Auxiliaries/.thumbnails/thumbnail_3mf.png");
+}
