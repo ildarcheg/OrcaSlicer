@@ -481,3 +481,51 @@ TEST_CASE("orca-cli: profile_clear rejects info-only fields with InvalidField",
     REQUIRE_THROWS_AS(profile_clear(s, {"license"}),   InvalidField);
     REQUIRE_THROWS_AS(profile_clear(s, {"user_id"}),   InvalidField);
 }
+
+TEST_CASE("orca-cli: sanitize_aux_name accepts legitimate filenames",
+          "[orca-cli][project-tab][unit]")
+{
+    REQUIRE(sanitize_aux_name("model.stl")              == "model.stl");
+    REQUIRE(sanitize_aux_name("assembly_step_1.png")    == "assembly_step_1.png");
+    REQUIRE(sanitize_aux_name("Bill of Materials.pdf")  == "Bill of Materials.pdf");
+    REQUIRE(sanitize_aux_name("a.b.c.png")              == "a.b.c.png");
+    REQUIRE(sanitize_aux_name("CON_NotReserved.txt")    == "CON_NotReserved.txt");
+}
+
+TEST_CASE("orca-cli: sanitize_aux_name rejects path-traversal and separators",
+          "[orca-cli][project-tab][unit]")
+{
+    REQUIRE_THROWS_AS(sanitize_aux_name(""),              AuxNameError);
+    REQUIRE_THROWS_AS(sanitize_aux_name("a/b"),           AuxNameError);
+    REQUIRE_THROWS_AS(sanitize_aux_name("a\\b"),          AuxNameError);
+    REQUIRE_THROWS_AS(sanitize_aux_name(std::string("a\0b", 3)), AuxNameError);
+    REQUIRE_THROWS_AS(sanitize_aux_name("."),             AuxNameError);
+    REQUIRE_THROWS_AS(sanitize_aux_name(".."),            AuxNameError);
+}
+
+TEST_CASE("orca-cli: sanitize_aux_name rejects leading/trailing dot or whitespace",
+          "[orca-cli][project-tab][unit]")
+{
+    REQUIRE_THROWS_AS(sanitize_aux_name(".hidden.png"),   AuxNameError);
+    REQUIRE_THROWS_AS(sanitize_aux_name("trail."),        AuxNameError);
+    REQUIRE_THROWS_AS(sanitize_aux_name(" leading.png"),  AuxNameError);
+    REQUIRE_THROWS_AS(sanitize_aux_name("trailing.png "), AuxNameError);
+    REQUIRE_THROWS_AS(sanitize_aux_name("\ttab.png"),     AuxNameError);
+}
+
+TEST_CASE("orca-cli: sanitize_aux_name rejects Windows reserved names (case-insensitive, with extension)",
+          "[orca-cli][project-tab][unit]")
+{
+    for (const std::string& n : {"CON", "con", "Con", "PRN", "AUX", "NUL",
+                                 "COM1", "com9", "LPT1", "lpt9"}) {
+        DYNAMIC_SECTION("bare: " << n) {
+            REQUIRE_THROWS_AS(sanitize_aux_name(n), AuxNameError);
+        }
+        DYNAMIC_SECTION("with ext: " << n + ".png") {
+            REQUIRE_THROWS_AS(sanitize_aux_name(n + ".png"), AuxNameError);
+        }
+    }
+    // Boundary: COM10 / LPT10 are NOT reserved.
+    REQUIRE(sanitize_aux_name("COM10.png") == "COM10.png");
+    REQUIRE(sanitize_aux_name("LPT10.png") == "LPT10.png");
+}

@@ -1,6 +1,7 @@
 // src/cli/project_tab_ops.cpp
 #include "project_tab_ops.hpp"
 #include <algorithm>
+#include <cctype>
 #include <fstream>
 #include <iomanip>
 #include <sstream>
@@ -253,6 +254,41 @@ void clear_cover_image(ProjectState& s, CoverTarget target) {
     boost::filesystem::remove(landed, ec);  // best-effort; absent file -> no-op
 }
 
-std::string sanitize_aux_name(const std::string&)                    { throw std::logic_error("not implemented"); }
+namespace {
+bool is_reserved_windows_name(const std::string& base) {
+    // base = portion before the first '.' (case-insensitive compare).
+    auto upper = base; for (auto& c : upper) c = std::toupper(static_cast<unsigned char>(c));
+    if (upper == "CON" || upper == "PRN" || upper == "AUX" || upper == "NUL")
+        return true;
+    if (upper.size() == 4 && (upper.substr(0,3) == "COM" || upper.substr(0,3) == "LPT")) {
+        char d = upper[3];
+        if (d >= '1' && d <= '9') return true;
+    }
+    return false;
+}
+} // namespace
+
+std::string sanitize_aux_name(const std::string& name) {
+    if (name.empty())
+        throw AuxNameError("aux name must not be empty");
+    for (char c : name) {
+        if (c == '/' || c == '\\')
+            throw AuxNameError("aux name must not contain path separators: '" + name + "'");
+        if (c == '\0')
+            throw AuxNameError("aux name must not contain null bytes");
+    }
+    if (name == "." || name == "..")
+        throw AuxNameError("aux name must not be '.' or '..'");
+    if (name.front() == '.' || name.back() == '.')
+        throw AuxNameError("aux name must not start or end with '.': '" + name + "'");
+    if (std::isspace(static_cast<unsigned char>(name.front())) ||
+        std::isspace(static_cast<unsigned char>(name.back())))
+        throw AuxNameError("aux name must not start or end with whitespace: '" + name + "'");
+    auto dot = name.find('.');
+    std::string base = (dot == std::string::npos) ? name : name.substr(0, dot);
+    if (is_reserved_windows_name(base))
+        throw AuxNameError("aux name uses a Windows reserved device name: '" + name + "'");
+    return name;
+}
 
 } // namespace orca_cli
