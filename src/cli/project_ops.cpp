@@ -276,20 +276,19 @@ void set_object_filament(ProjectState& s, const std::string& object_name,
 {
     using namespace Slic3r;
 
-    // Locate the named ModelObject.
-    ModelObject& obj = find_object_or_throw(s, object_name);
+    // Group-by-name: find every ModelObject with this name (--count N produces
+    // N independent ModelObjects sharing one name).
+    std::vector<ModelObject*> matched;
+    for (ModelObject* o : s.model->objects)
+        if (o->name == object_name) matched.push_back(o);
+    if (matched.empty())
+        throw std::out_of_range("object not found: " + object_name);
 
-    // Determine the legal slot range from the project's filament_settings_id.
-    // This is a ConfigOptionStrings whose .values.size() is the number of
-    // filament profiles wired into the project. A reference 3mf for an
-    // AMS-equipped Bambu printer typically has 4 or more slots; the
-    // committed fixture has 6.
     int slot_count = 0;
     if (s.project_config) {
         if (const auto* fsid = s.project_config->option<ConfigOptionStrings>("filament_settings_id"))
             slot_count = int(fsid->values.size());
     }
-
     if (filament_slot < 1 || filament_slot > slot_count) {
         throw std::out_of_range(
             "filament slot " + std::to_string(filament_slot) +
@@ -297,60 +296,56 @@ void set_object_filament(ProjectState& s, const std::string& object_name,
             "] for object '" + object_name + "'");
     }
 
-    // Bug B retrofit guard (cross-project audit follow-up): if any volume
-    // on this object has lost source.input_file (e.g. constructed by a
-    // future code path that bypassed stamp_source_attribution), re-stamp
-    // it from a non-empty fallback BEFORE we write extruder = N. The
-    // failure mode we are defending against is the exact Bug C pattern
-    // -- on-disk <part> with extruder set but no source_file -- which
-    // some Orca/Bambu GUI versions silently drop on load. Companion of
+    // Bug B retrofit guard (cross-project audit follow-up): re-stamp any
+    // ModelVolume::source.input_file that is empty, on every matched object,
+    // BEFORE writing extruder = N. Without it a future code path that
+    // produced a volume without attribution would slip past the
+    // archive-level `assert_parts_have_source_file` check. Companion of
     // stamp_source_attribution (add_object) and stamp_source_if_missing
     // (split_object_to_parts).
-    {
-        std::string fallback_input_file = obj.input_file;
-        if (fallback_input_file.empty()) {
-            for (const ModelVolume* v : obj.volumes) {
+    auto retrofit_source = [](ModelObject& obj) {
+        std::string fallback = obj.input_file;
+        if (fallback.empty()) {
+            for (const ModelVolume* v : obj.volumes)
                 if (!v->source.input_file.empty()) {
-                    fallback_input_file = v->source.input_file;
+                    fallback = v->source.input_file;
                     break;
                 }
+        }
+        if (fallback.empty()) return;
+        for (ModelVolume* v : obj.volumes) {
+            if (v->source.input_file.empty()) {
+                v->source.input_file = fallback;
+                v->source.object_idx = 0;
+                v->source.volume_idx = 0;
             }
         }
-        if (!fallback_input_file.empty()) {
-            for (ModelVolume* v : obj.volumes) {
-                if (v->source.input_file.empty()) {
-                    v->source.input_file = fallback_input_file;
-                    v->source.object_idx = 0;
-                    v->source.volume_idx = 0;
+    };
+
+    if (part_name.has_value() && !part_name->empty()) {
+        // Per-volume write. Apply to every matched object that has a volume
+        // by the requested part name. If NONE of the matched objects has the
+        // part, throw -- the user asked for a name that doesn't exist.
+        int volumes_stamped = 0;
+        for (ModelObject* obj_ptr : matched) {
+            retrofit_source(*obj_ptr);
+            for (ModelVolume* v : obj_ptr->volumes) {
+                if (v->name == *part_name) {
+                    v->config.set("extruder", filament_slot);
+                    ++volumes_stamped;
                 }
             }
         }
+        if (volumes_stamped == 0)
+            throw std::out_of_range("part not found: " + *part_name);
+        return;
     }
 
-    // When part_name is supplied and non-empty, write the extruder setting to
-    // the named volume's per-volume config rather than the object-level config.
-    // This is the T6 extension for split-to-parts workflows: individual parts
-    // can be assigned different filament slots without affecting the object's
-    // own config. We do NOT touch different_settings_to_system here -- that
-    // field is for the GUI's preset diff, which is object-level only.
-    if (part_name.has_value() && !part_name->empty()) {
-        for (ModelVolume* v : obj.volumes) {
-            if (v->name == *part_name) {
-                v->config.set("extruder", filament_slot);
-                return;
-            }
-        }
-        throw std::out_of_range("part not found: " + *part_name);
+    // Object-level write -- apply to every matched ModelObject.
+    for (ModelObject* obj_ptr : matched) {
+        retrofit_source(*obj_ptr);
+        obj_ptr->config.set("extruder", filament_slot);
     }
-
-    // No part_name supplied (std::nullopt or empty): existing P5 object-level
-    // write. ModelConfigObject::set<int>("extruder", N) constructs a
-    // ConfigOptionInt under the hood (m_data.set(key, value, /*create=*/true))
-    // and bumps the model-config timestamp. This is the same call-site shape
-    // used by the GUI's MMU and "set extruder" paths (see
-    // GUI_ObjectList.cpp:2819, ObjColorDialog.cpp:441) and by libslic3r itself
-    // in Model.cpp:3066.
-    obj.config.set("extruder", filament_slot);
 }
 
 // --------------------------------------------------------------------------
