@@ -659,3 +659,26 @@ TEST_CASE("orca-cli: aux_add propagates AuxNameError from sanitization",
     p.name = std::string("CON.png");  // Windows-reserved
     REQUIRE_THROWS_AS(aux_add(s, p), AuxNameError);
 }
+
+TEST_CASE("orca-cli: aux_remove deletes the named entry",
+          "[orca-cli][project-tab][unit]")
+{
+    auto tmp = orca_cli_test::make_temp_dir();
+    auto src = tmp / "x.png"; write_tiny_png(src);
+    auto s = make_empty_state();
+    AuxAddParams p; p.folder = AuxFolder::pictures; p.file = src;
+    aux_add(s, p);
+
+    aux_remove(s, AuxFolder::pictures, "x.png");
+    auto landed = boost::filesystem::path(s.model->get_auxiliary_file_temp_path())
+                  / folder_subdir(AuxFolder::pictures) / "x.png";
+    REQUIRE_FALSE(boost::filesystem::exists(landed));
+}
+
+TEST_CASE("orca-cli: aux_remove throws out_of_range on missing entry",
+          "[orca-cli][project-tab][unit]")
+{
+    auto s = make_empty_state();
+    REQUIRE_THROWS_AS(aux_remove(s, AuxFolder::pictures, "missing.png"),
+                      std::out_of_range);
+}

@@ -206,7 +206,16 @@ void aux_add(ProjectState& s, const AuxAddParams& p) {
         boost::filesystem::copy_options::overwrite_existing, ec);
     if (ec) throw BadAuxFile("failed to copy aux file: " + ec.message());
 }
-void aux_remove(ProjectState&, AuxFolder, const std::string&)        { throw std::logic_error("not implemented"); }
+void aux_remove(ProjectState& s, AuxFolder folder, const std::string& name) {
+    boost::system::error_code ec;
+    auto aux_root = boost::filesystem::path(s.model->get_auxiliary_file_temp_path());
+    auto path = aux_root / folder_subdir(folder) / name;
+    if (!boost::filesystem::is_regular_file(path, ec))
+        throw std::out_of_range("aux entry not found: "
+            + std::string(folder_flag(folder)) + "/" + name);
+    boost::filesystem::remove(path, ec);
+    if (ec) throw std::runtime_error("failed to remove aux entry: " + ec.message());
+}
 void aux_export(const ProjectState&, AuxFolder, const std::string&,
                 const boost::filesystem::path&)                      { throw std::logic_error("not implemented"); }
 
