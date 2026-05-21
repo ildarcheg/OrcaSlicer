@@ -158,7 +158,31 @@ void profile_clear(ProjectState& s, const std::vector<std::string>& fields) {
     }
 }
 
-std::vector<AuxEntry> aux_list(const ProjectState&)                  { throw std::logic_error("not implemented"); }
+std::vector<AuxEntry> aux_list(const ProjectState& s) {
+    std::vector<AuxEntry> out;
+    auto aux_root = boost::filesystem::path(s.model->get_auxiliary_file_temp_path());
+    boost::system::error_code ec;
+    if (!boost::filesystem::is_directory(aux_root, ec)) return out;
+
+    for (auto folder : {AuxFolder::pictures, AuxFolder::bom,
+                        AuxFolder::assembly_guide, AuxFolder::others}) {
+        auto sub = aux_root / folder_subdir(folder);
+        if (!boost::filesystem::is_directory(sub, ec)) continue;
+        for (auto it = boost::filesystem::directory_iterator(sub, ec);
+             it != boost::filesystem::directory_iterator(); it.increment(ec)) {
+            if (ec) break;
+            if (!boost::filesystem::is_regular_file(it->path(), ec)) continue;
+            AuxEntry e;
+            e.folder = folder;
+            e.name   = it->path().filename().string();
+            e.size   = static_cast<std::uint64_t>(
+                boost::filesystem::file_size(it->path(), ec));
+            if (ec) e.size = 0;
+            out.push_back(std::move(e));
+        }
+    }
+    return out;
+}
 void aux_add(ProjectState&, const AuxAddParams&)                     { throw std::logic_error("not implemented"); }
 void aux_remove(ProjectState&, AuxFolder, const std::string&)        { throw std::logic_error("not implemented"); }
 void aux_export(const ProjectState&, AuxFolder, const std::string&,

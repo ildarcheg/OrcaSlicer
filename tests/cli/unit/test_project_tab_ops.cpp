@@ -529,3 +529,40 @@ TEST_CASE("orca-cli: sanitize_aux_name rejects Windows reserved names (case-inse
     REQUIRE(sanitize_aux_name("COM10.png") == "COM10.png");
     REQUIRE(sanitize_aux_name("LPT10.png") == "LPT10.png");
 }
+
+TEST_CASE("orca-cli: aux_list returns empty four-bucket result on fresh project",
+          "[orca-cli][project-tab][unit]")
+{
+    auto s = make_empty_state();
+    auto entries = aux_list(s);
+    REQUIRE(entries.empty());
+}
+
+TEST_CASE("orca-cli: aux_list walks every populated bucket and stamps size",
+          "[orca-cli][project-tab][unit]")
+{
+    auto s = make_empty_state();
+    auto aux_root = boost::filesystem::path(s.model->get_auxiliary_file_temp_path());
+    auto pics = aux_root / folder_subdir(AuxFolder::pictures);
+    auto bom  = aux_root / folder_subdir(AuxFolder::bom);
+    boost::filesystem::create_directories(pics);
+    boost::filesystem::create_directories(bom);
+    {
+        std::ofstream(pics.string() + "/hero.png", std::ios::binary).write("HELLO", 5);
+        std::ofstream(bom.string()  + "/parts.csv", std::ios::binary).write("a,b,c\n", 6);
+    }
+
+    auto entries = aux_list(s);
+    REQUIRE(entries.size() == 2u);
+    bool saw_hero = false, saw_parts = false;
+    for (const auto& e : entries) {
+        if (e.folder == AuxFolder::pictures && e.name == "hero.png") {
+            REQUIRE(e.size == 5u); saw_hero = true;
+        }
+        if (e.folder == AuxFolder::bom && e.name == "parts.csv") {
+            REQUIRE(e.size == 6u); saw_parts = true;
+        }
+    }
+    REQUIRE(saw_hero);
+    REQUIRE(saw_parts);
+}
