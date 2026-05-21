@@ -326,6 +326,45 @@ TEST_CASE("orca-cli: set_object_filament rejects unknown object",
     REQUIRE_THROWS_AS(set_object_filament(s, "ghost", 1), std::out_of_range);
 }
 
+// Bug B retrofit guard: even if a future code path leaves a volume with
+// an empty source.input_file, set_object_filament re-stamps it from
+// obj->input_file (or a sibling volume) BEFORE writing the extruder.
+// This pins the post-condition that no on-disk <part> can carry an
+// extruder without a matching source_file. Companion of
+// stamp_source_attribution (add_object) and stamp_source_if_missing
+// (split_object_to_parts).
+TEST_CASE("set_object_filament re-stamps cleared source.input_file (Bug B retrofit guard)",
+          "[orca-cli][P5][unit][source-attribution]")
+{
+    if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+    auto stl = (orca_cli_test::stl_dir() / "000_01_test_cube.stl");
+    if (!boost::filesystem::exists(stl)) { SUCCEED("Skipped"); return; }
+
+    auto s = load_project(orca_cli_test::ref_3mf().string());
+    add_plate(s, "RetrofitGuard");
+
+    AddObjectParams p;
+    p.plate_name  = "RetrofitGuard";
+    p.stl_path    = stl.string();
+    p.object_name = "retro";
+    add_object(s, p);
+
+    // Simulate a future code path that left a volume without attribution.
+    Slic3r::ModelObject* obj = nullptr;
+    for (auto* o : s.model->objects)
+        if (o->name == "retro") obj = o;
+    REQUIRE(obj != nullptr);
+    REQUIRE_FALSE(obj->volumes.empty());
+    obj->volumes.front()->source.input_file.clear();
+    REQUIRE(obj->volumes.front()->source.input_file.empty());
+
+    // Retrofit assignment. Must re-stamp before writing extruder.
+    set_object_filament(s, "retro", 2);
+
+    REQUIRE_FALSE(obj->volumes.front()->source.input_file.empty());
+    REQUIRE(obj->config.opt_int("extruder") == 2);
+}
+
 TEST_CASE("orca-cli: add_object with filament_slot stamps extruder",
           "[orca-cli][P5][unit]")
 {

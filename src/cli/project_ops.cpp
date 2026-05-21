@@ -325,6 +325,36 @@ void set_object_filament(ProjectState& s, const std::string& object_name,
             "] for object '" + object_name + "'");
     }
 
+    // Bug B retrofit guard (cross-project audit follow-up): if any volume
+    // on this object has lost source.input_file (e.g. constructed by a
+    // future code path that bypassed stamp_source_attribution), re-stamp
+    // it from a non-empty fallback BEFORE we write extruder = N. The
+    // failure mode we are defending against is the exact Bug C pattern
+    // -- on-disk <part> with extruder set but no source_file -- which
+    // some Orca/Bambu GUI versions silently drop on load. Companion of
+    // stamp_source_attribution (add_object) and stamp_source_if_missing
+    // (split_object_to_parts).
+    {
+        std::string fallback_input_file = obj.input_file;
+        if (fallback_input_file.empty()) {
+            for (const ModelVolume* v : obj.volumes) {
+                if (!v->source.input_file.empty()) {
+                    fallback_input_file = v->source.input_file;
+                    break;
+                }
+            }
+        }
+        if (!fallback_input_file.empty()) {
+            for (ModelVolume* v : obj.volumes) {
+                if (v->source.input_file.empty()) {
+                    v->source.input_file = fallback_input_file;
+                    v->source.object_idx = 0;
+                    v->source.volume_idx = 0;
+                }
+            }
+        }
+    }
+
     // When part_name is supplied and non-empty, write the extruder setting to
     // the named volume's per-volume config rather than the object-level config.
     // This is the T6 extension for split-to-parts workflows: individual parts
