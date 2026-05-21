@@ -65,7 +65,8 @@ orca-cli project aux export      <file> --folder F --name N --to PATH
 
 - `info set` / `profile set` accept **multiple field flags per
   invocation**; one 3mf rewrite per call regardless of how many fields
-  changed. At least one field flag must be supplied (zero → `BadInput`).
+  changed. At least one field flag must be supplied (zero → CLI11
+  rejects → `usage_error` exit 1).
 - `--cover IMG` is the only file-valued flag on `info`/`profile set`.
   **PNG-only** — the canonical embed path in the 3mf is fixed at
   `Auxiliaries/.thumbnails/thumbnail_3mf.png` (`bbs_3mf.cpp:205`), and
@@ -87,8 +88,8 @@ orca-cli project aux export      <file> --folder F --name N --to PATH
   set:
   - info: `title`, `description`, `license`, `copyright`, `cover`
   - profile: `title`, `description`, `cover`
-  Unknown → `InvalidField` (exit 2) with an error message listing the
-  legal names.
+  Unknown → `InvalidField` (exit 4 `bad_config`) with an error message
+  listing the legal names.
 - **`clear --field cover` is a refcount-style operation** on the shared
   image. The verb nulls the pointer on the named surface only
   (`model_info->cover_file` or `profile_info->ProfileCover`). The
@@ -113,8 +114,8 @@ orca-cli project aux export      <file> --folder F --name N --to PATH
   Note the JSON shape (§ 2.2) uses `assembly_guide` (underscore) for
   the same bucket — see § 2.3 for the naming convention.
 - `aux add --name N` overrides the in-3mf basename. Default = source
-  basename. The name is sanitized; any of the following → `BadInput`
-  (exit 2):
+  basename. The name is sanitized; any of the following → `AuxNameError`
+  (exit 4 `bad_config`):
   - empty string
   - any `/`, `\`, or null byte (`\0`)
   - any path component equal to `.` or `..`
@@ -125,7 +126,7 @@ orca-cli project aux export      <file> --folder F --name N --to PATH
   Windows), so the CLI rejects them up-front rather than producing a
   3mf that fails to round-trip.
 - `aux add` collision (target name already exists in the bucket) →
-  `FileExists` (exit 5) unless `--force` is supplied. `--force` over a
+  `AuxCollisionError` (exit 5 `duplicate_name`) unless `--force` is supplied. `--force` over a
   byte-identical file is still exit 0.
 - `aux export` is read-only — no model rewrite, no guard, no atomic
   rename. If `--to PATH` resolves to an existing directory, the file is
@@ -235,9 +236,9 @@ code** — we leverage the existing pack/unpack pipeline.
 1. Validate `src` exists and is readable.
 2. Read the first 8 bytes of `src` and require them to match the PNG
    signature exactly: `89 50 4E 47 0D 0A 1A 0A`. Anything else (JPG,
-   WebP, BMP, truncated file, non-image) → `BadCoverImage` (exit 2)
-   with a message naming the offending path and the detected magic
-   prefix in hex.
+   WebP, BMP, truncated file, non-image) → `BadCoverImage`
+   (exit 4 `bad_config`) with a message naming the offending path and
+   the detected magic prefix in hex.
 3. Copy bytes into the auxiliary temp dir at
    `.thumbnails/thumbnail_3mf.png` (canonical path per
    `bbs_3mf.cpp:205`). The filename extension is fixed at `.png`
@@ -290,7 +291,8 @@ no guard, no rename. Cheap.
   values (see § 2.2 for the exact shape); exit 0.
 
 ### `project info set <file> [--title …] [--description …] [--cover IMG] …`
-1. Parse flags; zero field-flags → `BadInput` (exit 2).
+1. Parse flags; CLI11 rejects zero field-flags (`usage_error`, exit 1)
+   via a "require at least one of --title/--description/…" group.
 2. Load. Allocate `model_info` if nullptr.
 3. For each supplied flag: assign to the matching `ModelInfo` string
    field, or call `embed_cover_image(.., CoverTarget::Info)` for `--cover`.
@@ -299,7 +301,7 @@ no guard, no rename. Cheap.
 ### `project info clear <file> --field title,description,…`
 1. Parse `--field` as comma list; validate each against
    `{title, description, license, copyright, cover}`. Unknown →
-   `InvalidField` (exit 2).
+   `InvalidField` (exit 4 `bad_config`).
 2. Load.
 3. For each named field: null it (empty string for strings). For
    `cover`, call `clear_cover_image(.., CoverTarget::Info)` (§ 3.5) —
@@ -331,45 +333,55 @@ only deleted when both `info` and `profile` cover pointers are empty.
   `model.get_auxiliary_file_temp_path()` → emit table or JSON. No write.
 
 ### `project aux add <file> --folder F --file PATH [--name N] [--force]`
-1. Validate `--folder` against the enum (`BadInput` exit 2 if unknown).
-2. Stat `--file PATH`; missing/unreadable → `BadAuxFile` (exit 2).
+1. Validate `--folder` against the enum. CLI11's `CheckedTransformer`
+   rejects unknown values with `usage_error` (exit 1) before our
+   callback runs.
+2. Stat `--file PATH`; missing/unreadable → `BadAuxFile`
+   (exit 2 `file_not_found`).
 3. Load.
 4. Compute target name: `N` if given, else `basename(PATH)`. Sanitize
    per the full ruleset in § 2.1 (rejects path separators, `..`, null
    bytes, leading/trailing dots & whitespace, and Windows reserved
-   names like `CON`, `COM1`, `LPT1`). Any rejection → `BadInput`
-   (exit 2) with a message naming the offending substring.
+   names like `CON`, `COM1`, `LPT1`). Any rejection → `AuxNameError`
+   (exit 4 `bad_config`) with a message naming the offending substring.
 5. Collision check against the bucket subdir; present and not `--force` →
-   `FileExists` (exit 5).
+   `AuxCollisionError` (exit 5 `duplicate_name`).
 6. Copy source bytes into `<bucket>/<name>` in the temp aux dir.
 7. Store → guard → atomic rename.
 
 ### `project aux remove <file> --folder F --name N`
-1. Validate `--folder`.
+1. Validate `--folder` (CLI11; see `aux add` step 1).
 2. Load.
-3. `<bucket>/<name>` not present → `NotFound` (exit 7).
+3. `<bucket>/<name>` not present → throw `std::out_of_range`; mapped
+   by `MutationExceptionMap` default to `unknown_reference` (exit 6).
 4. Delete file from temp aux dir.
 5. Store → guard → atomic rename.
 
 ### `project aux export <file> --folder F --name N --to PATH`
 1. Validate `--folder`.
-2. Resolve `--to PATH`:
+`aux export` is read-only — it doesn't go through `run_mutation`
+(which calls `save_project`). It has its own try/catch chain in the
+command callback:
+
+1. Resolve `--to PATH`:
    - If `PATH` exists and is a directory → final destination is
      `PATH/<name>` (where `<name>` is the in-3mf basename from
      `--name`).
    - Otherwise → `PATH` is the final destination (file path).
    - In both cases, the parent directory of the final destination must
-     exist and be writable; otherwise → `BadInput` (exit 2). We do not
-     create intermediate directories (would be a destructive action
-     beyond user intent — they can `mkdir` themselves).
-3. Load.
-4. `<bucket>/<name>` not present in the 3mf → `NotFound` (exit 7).
-5. Copy file from temp aux dir → final destination. **Overwrites
+     exist; otherwise → `bad_config` (exit 4) with message
+     `--to parent dir does not exist: <path>`. We do not create
+     intermediate directories.
+2. Load (`load_project`).
+3. `<bucket>/<name>` not present in the 3mf → `unknown_reference`
+   (exit 6) with message `aux file not found: <bucket>/<name>`.
+4. Copy file from temp aux dir → final destination. **Overwrites
    existing destination files without prompting** (same posture as
    v2's `--output O`: the user named the destination path explicitly,
-   so the write is consent). On Windows, overwriting a destination
-   that's currently held open by another process → `BadInput` (exit 2)
-   with the OS error surfaced.
+   so the write is consent). Any filesystem error during copy
+   (permission denied, destination held open by another process on
+   Windows, etc.) → `parse_failure` (exit 3) with the OS error
+   message surfaced.
 
 No model rewrite. No guard. No rename of the source 3mf.
 
@@ -377,22 +389,39 @@ No model rewrite. No guard. No rename of the source 3mf.
 
 ### 5.1 Exit-code contract
 
-Reused from v2 (`src/cli/error.hpp`, no code changes):
+Reused from v2 (`src/cli/output.hpp`, `enum class ExitCode`, no code
+changes). The v2 enum uses specific labels (`file_not_found`,
+`duplicate_name`, `unknown_reference`, `invalid_state`, etc.) rather
+than generic "BadInput"; this spec maps each new failure to the
+existing label whose semantics match best:
 
-| Code | Class            | Used for |
-|------|------------------|----------|
-| 0    | (success)        | success and idempotent no-ops |
-| 2    | `BadInput`       | missing input 3mf; malformed args; zero field-flags on `set`; unknown `--folder` enum; sanitization rejection on `--name` |
-| 5    | `FileExists`     | aux collision without `--force` |
-| 7    | `NotFound`       | `aux remove`/`aux export` for an absent name |
+| Code | v2 label              | Used here for |
+|------|-----------------------|---------------|
+| 0    | `ok`                  | success and idempotent no-ops |
+| 1    | `usage_error`         | CLI11 rejects unknown / missing required flags (e.g. unknown `--folder` enum, zero field-flags on `set`); we let CLI11 handle these. Read-only verbs reject `--output` here. |
+| 2    | `file_not_found`      | missing input 3mf (`check_input_exists` in `io.hpp`); `--file PATH` for `aux add` unreadable or absent (`BadAuxFile`). |
+| 3    | `parse_failure`       | `load_project` failure on a corrupt 3mf; any uncaught `std::exception` from the load path. |
+| 4    | `bad_config`          | `--cover IMG` not a valid PNG (`BadCoverImage`); `--field NAME` not in the per-surface allowed set (`InvalidField`); `--name N` rejected by sanitization (`AuxNameError`); `--to PATH` parent not writable. |
+| 5    | `duplicate_name`      | `aux add` collision without `--force` (`AuxCollisionError`). |
+| 6    | `unknown_reference`   | `aux remove` / `aux export` for an absent name (raised as `std::out_of_range`, mapped by `MutationExceptionMap` default). |
+| 8    | `invariant_violation` | post-save guard rejection (`verify_relationships`, etc. — v2 behaviour, untouched). |
 
-Added next to existing classes in `error.hpp`:
+New exception classes added next to existing
+`PlacementFailure`/`BadConfigError`/`DuplicateNameError` in
+`src/cli/project_ops.hpp` (or a sibling `project_tab_ops.hpp` — see
+§ 3.1):
 
-| Code | Class            | Used for |
-|------|------------------|----------|
-| 2    | `BadCoverImage`  | `--cover` path unreadable, missing, or first 8 bytes don't match the PNG signature `89 50 4E 47 0D 0A 1A 0A`. Error message includes offending path and the detected magic prefix in hex. JPG is rejected here (see § 3.4). |
-| 2    | `BadAuxFile`     | `--file` for `aux add` unreadable or absent. Distinct from `BadCoverImage` so messages can be targeted. |
-| 2    | `InvalidField`   | `clear --field X` where `X` isn't in the per-surface allowed set. Error message lists legal names for that surface. |
+| Class                | Maps to       | Used for |
+|----------------------|---------------|----------|
+| `BadCoverImage`      | `bad_config`  | `embed_cover_image` rejects non-PNG content. Message includes offending path + detected magic prefix in hex. |
+| `BadAuxFile`         | `file_not_found` | `aux_add` source `--file` missing or unreadable. Distinct from `BadCoverImage` so messages can be targeted. |
+| `InvalidField`       | `bad_config`  | `info_clear`/`profile_clear` rejects an unknown field name. Message lists the legal names for that surface. |
+| `AuxNameError`       | `bad_config`  | `aux_add` rejects an unsafe `--name N` (path separators, reserved names, etc.). Message names the offending substring. |
+| `AuxCollisionError`  | `duplicate_name` | `aux_add` target name already present in the bucket and `--force` not set. |
+
+Aux-name "not found" on `remove`/`export` continues to use stdlib
+`std::out_of_range` (matches the existing `unknown_reference` default
+in `MutationExceptionMap`). No new class needed.
 
 ### 5.2 Idempotency rules
 
@@ -466,19 +495,20 @@ File: `tests/cli/unit/project_ops_test.cpp`
   insensitive), `COM1`, `LPT9`; happy cases accept `model.stl`,
   `assembly_step_1.png`, `Bill of Materials.pdf`.
 - `aux_add`: happy path; `--name` rename; collision without `--force`
-  → `FileExists`; collision with `--force` → success; collision with
-  `--force` on byte-identical file → success (idempotent); unknown
-  folder enum → `BadInput`.
-- `aux_remove`: happy path; missing name → `NotFound`; unknown folder
-  → `BadInput`.
+  → throws `AuxCollisionError`; collision with `--force` → success;
+  collision with `--force` on byte-identical file → success
+  (idempotent). Unknown `--folder` is rejected by CLI11 at the parse
+  layer, not by the op — the op accepts a typed `AuxFolder` enum.
+- `aux_remove`: happy path; missing name → throws `std::out_of_range`
+  (the command layer maps this to `unknown_reference`).
 - `aux_list`: empty (returns four empty bucket arrays, not error);
   populated bucket walk; JSON shape stable (keys always present even
   when empty, per § 2.2).
 - `aux_export`: happy path with file `--to`; happy path with directory
   `--to` (writes to `dir/<name>`, regression for § 4 directory case);
-  missing name → `NotFound`; unwritable `--to` parent → `BadInput`;
-  destination file already exists → silently overwritten (consent
-  via explicit `--to`).
+  missing name → throws `std::out_of_range`; non-existent `--to`
+  parent → throws `std::invalid_argument`; destination file already
+  exists → silently overwritten (consent via explicit `--to`).
 
 ### 6.2 E2E tests (~12 cases)
 
@@ -504,12 +534,14 @@ of `orca-cli`, exit-code + stdout assertions.
   under pictures.
 - `aux add` collision without `--force` → exit 5; with `--force` →
   exit 0.
-- `aux add --name CON.png` → exit 2 (Windows reserved name rejected
+- `aux add --name CON.png` → exit 4 (Windows reserved name rejected
   per § 2.1).
-- `aux remove` happy + missing-name (exit 7).
+- `aux remove` happy + missing-name (exit 6).
 - `aux export --to FILE` → file byte-equal to original source.
 - `aux export --to DIR/` (existing directory) → file written to
   `DIR/<name>`, byte-equal to original source.
+- `aux export --to NONEXISTENT_DIR/sub.png` → exit 4 (parent dir
+  missing).
 - `--output O` honoured on each mutating verb (does not overwrite input).
 
 ### 6.3 Roundtrip tests (~3 cases)
