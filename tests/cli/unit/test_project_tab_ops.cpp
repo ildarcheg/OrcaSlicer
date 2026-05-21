@@ -58,3 +58,52 @@ TEST_CASE("orca-cli: info_view returns populated ModelInfo fields verbatim",
     REQUIRE(v.cover       == "Auxiliaries/.thumbnails/thumbnail_3mf.png");
     REQUIRE(v.origin      == "OrcaSlicer");
 }
+
+TEST_CASE("orca-cli: any_field_set(InfoSetParams) detects every field individually",
+          "[orca-cli][project-tab][unit]")
+{
+    REQUIRE(!any_field_set(InfoSetParams{}));
+    InfoSetParams p;
+    p.title = "x";       REQUIRE(any_field_set(p));
+    p = {}; p.description = "x"; REQUIRE(any_field_set(p));
+    p = {}; p.license     = "x"; REQUIRE(any_field_set(p));
+    p = {}; p.copyright   = "x"; REQUIRE(any_field_set(p));
+    p = {}; p.cover       = boost::filesystem::path("x.png"); REQUIRE(any_field_set(p));
+}
+
+TEST_CASE("orca-cli: info_set allocates model_info when nullptr",
+          "[orca-cli][project-tab][unit]")
+{
+    auto s = make_empty_state();
+    REQUIRE(s.model->model_info == nullptr);
+    InfoSetParams p; p.title = "Smoke";
+    info_set(s, p);
+    REQUIRE(s.model->model_info != nullptr);
+    REQUIRE(s.model->model_info->model_name == "Smoke");
+}
+
+TEST_CASE("orca-cli: info_set batches multiple fields in one call",
+          "[orca-cli][project-tab][unit]")
+{
+    auto s = make_empty_state();
+    InfoSetParams p;
+    p.title       = "T";
+    p.description = "D";
+    p.license     = "MIT";
+    p.copyright   = "(c) 2026";
+    info_set(s, p);
+    REQUIRE(s.model->model_info->model_name  == "T");
+    REQUIRE(s.model->model_info->description == "D");
+    REQUIRE(s.model->model_info->license     == "MIT");
+    REQUIRE(s.model->model_info->copyright   == "(c) 2026");
+}
+
+TEST_CASE("orca-cli: info_set is idempotent (re-set same value is fine)",
+          "[orca-cli][project-tab][unit]")
+{
+    auto s = make_empty_state();
+    InfoSetParams p; p.title = "T";
+    info_set(s, p);
+    info_set(s, p);
+    REQUIRE(s.model->model_info->model_name == "T");
+}

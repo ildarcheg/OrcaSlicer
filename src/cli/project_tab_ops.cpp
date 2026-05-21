@@ -46,8 +46,24 @@ InfoView info_view(const ProjectState& s) {
     v.origin      = mi.origin;
     return v;
 }
-bool any_field_set(const InfoSetParams&)                             { throw std::logic_error("not implemented"); }
-void info_set(ProjectState&, const InfoSetParams&)                   { throw std::logic_error("not implemented"); }
+bool any_field_set(const InfoSetParams& p) {
+    return p.title.has_value()
+        || p.description.has_value()
+        || p.license.has_value()
+        || p.copyright.has_value()
+        || p.cover.has_value();
+}
+
+void info_set(ProjectState& s, const InfoSetParams& p) {
+    if (!s.model->model_info)
+        s.model->model_info = std::make_shared<Slic3r::ModelInfo>();
+    auto& mi = *s.model->model_info;
+    if (p.title)       mi.model_name  = *p.title;
+    if (p.description) mi.description = *p.description;
+    if (p.license)     mi.license     = *p.license;
+    if (p.copyright)   mi.copyright   = *p.copyright;
+    if (p.cover)       embed_cover_image(s, *p.cover, CoverTarget::Info);
+}
 const std::vector<std::string>& allowed_info_fields()                { throw std::logic_error("not implemented"); }
 void info_clear(ProjectState&, const std::vector<std::string>&)      { throw std::logic_error("not implemented"); }
 
