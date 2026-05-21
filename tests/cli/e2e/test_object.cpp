@@ -689,3 +689,36 @@ TEST_CASE("orca-cli: object remove with --count N removes every clone",
         if (o->name == "trio") ++remaining;
     REQUIRE(remaining == 0);
 }
+
+// 2026-05-21 cross-project audit v2, item 1 cont'd: object set-filament must
+// be group-by-name so every clone created by --count N picks up the same slot.
+TEST_CASE("orca-cli: object set-filament with --count N stamps every clone",
+          "[orca-cli][P5][e2e][group-set-filament]")
+{
+    if (ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+    auto cube = (stl_dir() / "000_01_test_cube.stl");
+    if (!fs::exists(cube)) { SUCCEED("Skipped"); return; }
+
+    auto tmp = make_temp_dir();
+    auto in  = copy_ref_to_temp(tmp, "group-set-filament");
+    REQUIRE(run_cli({"plate", "add", in.string(), "--name", "F"}).exit_code == 0);
+    REQUIRE(run_cli({"object", "add", in.string(),
+                     "--plate", "F",
+                     "--stl",   cube.string(),
+                     "--count", "3",
+                     "--name",  "trio_f"}).exit_code == 0);
+    REQUIRE(run_cli({"object", "set-filament", in.string(),
+                     "--name", "trio_f",
+                     "--filament", "2"}).exit_code == 0);
+
+    auto s = orca_cli::load_project(in.string());
+    int matches = 0;
+    for (const auto* o : s.model->objects) {
+        if (o->name != "trio_f") continue;
+        ++matches;
+        const auto* eopt = o->config.get().opt<Slic3r::ConfigOptionInt>("extruder");
+        REQUIRE(eopt != nullptr);
+        REQUIRE(eopt->value == 2);
+    }
+    REQUIRE(matches == 3);
+}
