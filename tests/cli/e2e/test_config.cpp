@@ -4,6 +4,8 @@
 #include "io.hpp"
 #include "project_ops.hpp"
 
+#include <nlohmann/json.hpp>
+
 #include <libslic3r/Config.hpp>
 #include <libslic3r/Model.hpp>
 #include <libslic3r/PrintConfig.hpp>
@@ -260,4 +262,110 @@ TEST_CASE("orca-cli: config set adds key to different_settings_to_system in save
     std::vector<std::string> dirty;
     Slic3r::unescape_strings_cstyle(diff->values[0], dirty);
     REQUIRE(std::find(dirty.begin(), dirty.end(), "sparse_infill_density") != dirty.end());
+}
+
+// 2026-05-21 cross-project audit v2 follow-up: --count N produces N
+// independent ModelObjects sharing one name. `config set --object NAME` must
+// therefore apply to ALL of them (group-by-name), otherwise the user would
+// have to issue one config set per clone.
+TEST_CASE("orca-cli: config set --object stamps every clone in a --count cluster",
+          "[orca-cli][P6][e2e][group-config-set]")
+{
+    if (ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+    auto cube = (stl_dir() / "000_01_test_cube.stl");
+    if (!fs::exists(cube)) { SUCCEED("Skipped"); return; }
+
+    auto tmp = make_temp_dir();
+    auto in  = copy_ref_to_temp(tmp, "group-cfg-set");
+    REQUIRE(run_cli({"plate", "add", in.string(), "--name", "G"}).exit_code == 0);
+    REQUIRE(run_cli({"object", "add", in.string(),
+                     "--plate", "G",
+                     "--stl",   cube.string(),
+                     "--count", "3",
+                     "--name",  "trio_c"}).exit_code == 0);
+    REQUIRE(run_cli({"config", "set", in.string(),
+                     "--object", "trio_c",
+                     "--key", "wall_loops", "--value", "4"}).exit_code == 0);
+
+    auto s = orca_cli::load_project(in.string());
+    int matches = 0;
+    for (const auto* o : s.model->objects) {
+        if (o->name != "trio_c") continue;
+        ++matches;
+        const auto* opt = o->config.get().opt<Slic3r::ConfigOptionInt>("wall_loops");
+        REQUIRE(opt != nullptr);
+        REQUIRE(opt->value == 4);
+    }
+    REQUIRE(matches == 3);
+}
+
+// `config unset --object NAME` symmetric to `set` for clone-groups.
+TEST_CASE("orca-cli: config unset --object clears every clone in a --count cluster",
+          "[orca-cli][P6][e2e][group-config-unset]")
+{
+    if (ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+    auto cube = (stl_dir() / "000_01_test_cube.stl");
+    if (!fs::exists(cube)) { SUCCEED("Skipped"); return; }
+
+    auto tmp = make_temp_dir();
+    auto in  = copy_ref_to_temp(tmp, "group-cfg-unset");
+    REQUIRE(run_cli({"plate", "add", in.string(), "--name", "U"}).exit_code == 0);
+    REQUIRE(run_cli({"object", "add", in.string(),
+                     "--plate", "U",
+                     "--stl",   cube.string(),
+                     "--count", "3",
+                     "--name",  "trio_u"}).exit_code == 0);
+    // Set first via the (already group-aware) set, then unset.
+    REQUIRE(run_cli({"config", "set", in.string(),
+                     "--object", "trio_u",
+                     "--key", "wall_loops", "--value", "4"}).exit_code == 0);
+    REQUIRE(run_cli({"config", "unset", in.string(),
+                     "--object", "trio_u",
+                     "--key", "wall_loops"}).exit_code == 0);
+
+    auto s = orca_cli::load_project(in.string());
+    int matches = 0;
+    for (const auto* o : s.model->objects) {
+        if (o->name != "trio_u") continue;
+        ++matches;
+        REQUIRE_FALSE(o->config.has("wall_loops"));
+    }
+    REQUIRE(matches == 3);
+}
+
+// `config list --object NAME` returns the union of keys across all matched
+// objects, with values pulled from any matching object that has the key.
+// Under normal usage (post-group-set), all clones agree.
+TEST_CASE("orca-cli: config list --object lists the cluster's keyset",
+          "[orca-cli][P6][e2e][group-config-list]")
+{
+    if (ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+    auto cube = (stl_dir() / "000_01_test_cube.stl");
+    if (!fs::exists(cube)) { SUCCEED("Skipped"); return; }
+
+    auto tmp = make_temp_dir();
+    auto in  = copy_ref_to_temp(tmp, "group-cfg-list");
+    REQUIRE(run_cli({"plate", "add", in.string(), "--name", "L"}).exit_code == 0);
+    REQUIRE(run_cli({"object", "add", in.string(),
+                     "--plate", "L",
+                     "--stl",   cube.string(),
+                     "--count", "3",
+                     "--name",  "trio_l"}).exit_code == 0);
+    REQUIRE(run_cli({"config", "set", in.string(),
+                     "--object", "trio_l",
+                     "--key", "wall_loops", "--value", "5"}).exit_code == 0);
+
+    auto r = run_cli({"--json", "config", "list", in.string(), "--object", "trio_l"});
+    REQUIRE(r.exit_code == 0);
+    auto j = nlohmann::json::parse(r.stdout_);
+    REQUIRE(j["status"] == "ok");
+    // The keys array must contain wall_loops with value "5".
+    bool saw_wall_loops = false;
+    for (const auto& kv : j["data"]["keys"]) {
+        if (kv["key"] == "wall_loops") {
+            REQUIRE(kv["value"] == "5");
+            saw_wall_loops = true;
+        }
+    }
+    REQUIRE(saw_wall_loops);
 }
