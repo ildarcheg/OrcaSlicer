@@ -567,3 +567,39 @@ TEST_CASE("orca-cli: object list reports the plate name for objects on plates", 
     }
     REQUIRE(found_obj);
 }
+
+TEST_CASE("orca-cli: object list --plate P filters to objects on the named plate",
+          "[orca-cli][P3][e2e]")
+{
+    if (ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+    auto cube = (stl_dir() / "000_01_test_cube.stl");
+    if (!fs::exists(cube)) { SUCCEED("Skipped: no cube fixture"); return; }
+
+    auto tmp = make_temp_dir();
+    auto in  = copy_ref_to_temp(tmp, "obj-list-filter");
+    REQUIRE(run_cli({"plate","add",in.string(),"--name","A"}).exit_code == 0);
+    REQUIRE(run_cli({"plate","add",in.string(),"--name","B"}).exit_code == 0);
+    REQUIRE(run_cli({"object","add",in.string(),"--plate","A","--stl",cube.string(),
+                     "--name","onA"}).exit_code == 0);
+    REQUIRE(run_cli({"object","add",in.string(),"--plate","B","--stl",cube.string(),
+                     "--name","onB"}).exit_code == 0);
+
+    // Filter to plate A: only "onA" should appear.
+    auto r = run_cli({"--json","object","list",in.string(),"--plate","A"});
+    INFO("stdout: " << r.stdout_ << "\nstderr: " << r.stderr_);
+    REQUIRE(r.exit_code == 0);
+    auto j = nlohmann::json::parse(r.stdout_);
+    REQUIRE(j["status"] == "ok");
+    bool seen_onA = false, seen_onB = false;
+    for (const auto& obj : j["data"]["objects"]) {
+        if (obj["name"] == "onA") seen_onA = true;
+        if (obj["name"] == "onB") seen_onB = true;
+    }
+    REQUIRE(seen_onA);
+    REQUIRE_FALSE(seen_onB);
+
+    // Unknown plate: exit 6 (unknown_reference).
+    auto r2 = run_cli({"object","list",in.string(),"--plate","NoSuchPlate"});
+    INFO("stdout: " << r2.stdout_ << "\nstderr: " << r2.stderr_);
+    REQUIRE(r2.exit_code == 6);
+}

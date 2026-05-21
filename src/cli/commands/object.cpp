@@ -149,7 +149,9 @@ int do_object_remove(const GlobalOpts& g,
         [&](ProjectState& s) { remove_object(s, name); });
 }
 
-int do_object_list(const GlobalOpts& g, const std::string& file)
+int do_object_list(const GlobalOpts& g,
+                   const std::string& file,
+                   const std::string& plate_filter)
 {
     if (g.output.has_value()) {
         print_err(g, ExitCode::usage_error,
@@ -167,10 +169,27 @@ int do_object_list(const GlobalOpts& g, const std::string& file)
         return int(ExitCode::parse_failure);
     }
 
+    // Cross-project audit P3: optional --plate P filter (spec § 4.3 line 154).
+    // Validate the plate name up front so a typo surfaces as exit 6 instead
+    // of an empty list that the user could mistake for "no objects".
+    if (!plate_filter.empty()) {
+        bool found = false;
+        for (const auto& pd : state.plates) {
+            if (pd->plate_name == plate_filter) { found = true; break; }
+        }
+        if (!found) {
+            print_err(g, ExitCode::unknown_reference,
+                      "plate not found: " + plate_filter);
+            return int(ExitCode::unknown_reference);
+        }
+    }
+
     // Build (object_name, plate_name) tuples by walking
     // PlateData::objects_and_instances. An object on no plate (rare but
     // possible after `object remove` edge cases or weird input 3mfs) is
-    // still emitted with an empty plate name so the user can see it.
+    // still emitted with an empty plate name so the user can see it --
+    // unless --plate P is in effect, in which case we only emit rows
+    // whose plate matches P.
     struct Row { std::string object; std::string plate; };
     std::vector<Row> rows;
     std::vector<bool> on_plate(state.model->objects.size(), false);
@@ -180,13 +199,17 @@ int do_object_list(const GlobalOpts& g, const std::string& file)
             if (oi < 0 || oi >= int(state.model->objects.size())) continue;
             if (on_plate[oi]) continue; // one row per (object, first-plate)
             on_plate[oi] = true;
+            if (!plate_filter.empty() && pd->plate_name != plate_filter) continue;
             rows.push_back({state.model->objects[oi]->name, pd->plate_name});
         }
     }
-    // Objects that aren't on any plate -- still surface them.
-    for (size_t i = 0; i < state.model->objects.size(); ++i) {
-        if (on_plate[i]) continue;
-        rows.push_back({state.model->objects[i]->name, std::string{}});
+    // Objects that aren't on any plate -- surface them only when no filter
+    // is in effect, since by definition they don't belong to the named plate.
+    if (plate_filter.empty()) {
+        for (size_t i = 0; i < state.model->objects.size(); ++i) {
+            if (on_plate[i]) continue;
+            rows.push_back({state.model->objects[i]->name, std::string{}});
+        }
     }
 
     emit_list_response(g, "objects",
@@ -220,6 +243,7 @@ void register_object_subcmd(CLI::App& app, GlobalOpts& g)
     static int         add_filament = 0;
     static std::string rm_file,  rm_name;
     static std::string ls_file;
+    static std::string ls_plate;
     // P5: state for `object set-filament`.
     static std::string sf_file, sf_name, sf_part;
     static int         sf_slot = 0;
@@ -424,13 +448,18 @@ void register_object_subcmd(CLI::App& app, GlobalOpts& g)
     // -- object list -------------------------------------------------------
     auto* ls = obj->add_subcommand("list", "list objects in a project");
     ls->add_option("file", ls_file, "input .3mf path")->required();
+    // Cross-project audit P3 (spec § 4.3 line 154): optional --plate filter.
+    // Unknown plate name -> exit 6 (unknown_reference); empty string means
+    // "no filter, list all" so the test harness defaults work unchanged.
+    ls->add_option("--plate", ls_plate,
+                   "(optional) filter to objects on the named plate");
     // See commands/plate.cpp for the rationale on registering --output
     // here just to reject it explicitly with usage_error rather than the
     // CLI11 "unknown option" exit code.
     ls->add_option("--output", g.output,
                    "(rejected on object list; mutating subcommands only)");
     ls->callback([&g]() {
-        std::exit(do_object_list(g, ls_file));
+        std::exit(do_object_list(g, ls_file, ls_plate));
     });
 }
 
