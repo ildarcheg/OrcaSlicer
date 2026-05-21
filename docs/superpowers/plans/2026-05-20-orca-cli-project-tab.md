@@ -55,7 +55,7 @@ Faster iteration on the new tag:
 | `tests/cli/roundtrip/test_project_tab.cpp` | 3 roundtrip cases per spec § 6.3. | **Create** |
 | `tests/cli/fixtures/cover_smoke.png` | Tiny valid PNG (1×1 transparent, ~200 bytes). Happy-path cover fixture. | **Create (binary)** |
 | `tests/cli/fixtures/cover_smoke.jpg` | Tiny valid JPG (1×1, ~300 bytes). Rejection-path fixture (exercises `BadCoverImage`). | **Create (binary)** |
-| `tests/cli/fixtures/assembly_smoke.pdf` | Minimal valid PDF (~500 bytes). Aux happy-path fixture. | **Create (binary)** |
+| `tests/cli/fixtures/assembly_smoke.txt` | Plain UTF-8 text (~400 bytes). Aux happy-path fixture; chosen over a hand-rolled minimal PDF for byte-offset-fragility reasons documented in Task 22 Step 3. | **Create** |
 | `docs/cli/manual-test.md` | Append **Phase 10** section per spec § 6.4. | **Modify** |
 | `docs/cli/status.md` | Add Phase 10 status block (if the file exists; otherwise skip). | **Modify** |
 
@@ -100,6 +100,39 @@ Baseline capture is observational; nothing changes on disk.
 - Create: `src/cli/project_tab_ops.hpp`
 
 The header is API-surface only; the .cpp comes in Task 2. This task establishes the types so every later task can refer to them concretely.
+
+- [ ] **Step 0: Verify the libslic3r types the plan assumes (must be done BEFORE editing the header)**
+
+The plan assumes:
+- `Slic3r::Model::model_info` is `std::shared_ptr<Slic3r::ModelInfo>`
+- `Slic3r::Model::profile_info` is `std::shared_ptr<Slic3r::ModelProfileInfo>`
+- `Slic3r::ModelInfo` has public `std::string model_name`
+- `Slic3r::ModelProfileInfo` has public `std::string ProfileTile` (sic — typo preserved upstream), `ProfileCover`, `ProfileDescription`, `ProfileUserId`, `ProfileUserName`
+
+Confirm each before proceeding. Three quick greps:
+
+```powershell
+# 1. shared_ptr members on Model
+Select-String -Path src/libslic3r/Model.hpp -Pattern "shared_ptr<ModelInfo>|shared_ptr<ModelProfileInfo>"
+# Expected (Model.hpp around line 1540-1542):
+#   std::shared_ptr<ModelInfo> model_info = nullptr;
+#   std::shared_ptr<ModelProfileInfo> profile_info = nullptr;
+
+# 2. ModelInfo field names
+Select-String -Path src/libslic3r/Model.hpp -Pattern "model_name|cover_file" -Context 0,0
+# Expected: both names appear as `std::string` members of class ModelInfo
+# around line 1494-1516.
+
+# 3. ModelProfileInfo field names (note the typo "ProfileTile")
+Select-String -Path src/libslic3r/Model.hpp -Pattern "ProfileTile|ProfileCover|ProfileUserId|ProfileUserName"
+# Expected: all four appear as `std::string` members of class
+# ModelProfileInfo around line 1475-1483. ProfileTile is the title field
+# (typo preserved upstream).
+```
+
+If any assumption fails (e.g. `unique_ptr` instead of `shared_ptr`, or a different field name), **STOP** and reconcile before writing the header. The most likely shape changes:
+- If members are `unique_ptr`, change every `std::make_shared<Slic3r::ModelInfo>()` in later tasks to `std::make_unique<Slic3r::ModelInfo>()`. The `nullptr` checks (`if (!s.model->model_info)`) continue to work identically.
+- If `model_name` is named differently (e.g. `title`), update Task 5's `info_view` body and Task 6's `info_set` body to match. Search the plan for `model_name` and rename every occurrence consistently.
 
 - [ ] **Step 1: Create the header file with the full declared surface**
 
@@ -1760,9 +1793,43 @@ accepted (not reserved). Spec § 2.1."
 - Modify: `src/cli/project_tab_ops.cpp`
 - Modify: `tests/cli/unit/test_project_tab_ops.cpp`
 
-Walks all four bucket subdirs under `model.get_auxiliary_file_temp_path() / "Auxiliaries"`. Wait — actually `get_auxiliary_file_temp_path()` IS the auxiliaries root on disk (libslic3r extracts the 3mf's `Metadata/Auxiliaries/` into that temp dir). Confirm by reading the Project.cpp:156 usage: `model.get_auxiliary_file_temp_path()` returns a string that the GUI's AuxiliaryPanel reloads from. Check the implementation in libslic3r to be sure (search for it in Model.cpp). For this plan: use `aux_root = boost::filesystem::path(s.model->get_auxiliary_file_temp_path())` and walk its four named subdirs directly.
+Walks all four bucket subdirs under the model's auxiliary temp dir. The
+plan assumes `model.get_auxiliary_file_temp_path()` returns the path to
+a directory whose immediate children are the bucket subdirs ("Model
+Pictures", "Bill of Materials", "Assembly Guide", "Others"). This must
+be verified before writing the body.
 
-> **Implementer note:** before writing the body, run `Grep get_auxiliary_file_temp_path src/libslic3r/Model.cpp` to confirm what the returned path actually contains. If it's the path to a directory whose CHILDREN are the bucket subdirs (no intermediate "Auxiliaries" element), the code below is correct. If there's an intermediate path component, adjust the walk accordingly.
+- [ ] **Step 0: Verify `get_auxiliary_file_temp_path()`'s return-path shape (MANDATORY before Step 3)**
+
+```powershell
+# 1. Find the implementation.
+Select-String -Path src/libslic3r/Model.cpp -Pattern "get_auxiliary_file_temp_path" -Context 0,8
+# Expected: a method body that returns either:
+#   (a) a string ending in ".../Auxiliaries"  -- children are the buckets directly
+#   (b) a string ending in some other dir, with "/Auxiliaries" appended inside
+
+# 2. Cross-reference how the GUI walks it (the canonical consumer).
+Select-String -Path src/slic3r/GUI/Auxiliary.cpp -Pattern "get_auxiliary_file_temp_path|m_root_dir" -Context 0,4
+# Expected: AuxiliaryPanel uses the returned path directly as m_root_dir
+# and lists "Model Pictures" / "Bill of Materials" etc. as direct
+# children of it.
+```
+
+If the path's children are the bucket subdirs (case a), the
+implementation below is correct as-written: `aux_root / folder_subdir(f)`
+resolves to the bucket. If there's an intermediate component (case b),
+prepend it consistently in every aux op:
+
+```cpp
+auto aux_root = boost::filesystem::path(s.model->get_auxiliary_file_temp_path())
+              / "Auxiliaries";   // <- only if Step 0 finds an intermediate
+```
+
+Apply the same correction in `embed_cover_image` (Task 9), `aux_add`
+(Task 14), `aux_remove` (Task 15), `aux_export` (Task 16). The unit
+tests will pass either way — they round-trip through the same helper —
+but a wrong shape here means real 3mf round-trips silently land files
+in the wrong place.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2234,7 +2301,7 @@ void install_project_aux_subcmd    (CLI::App& project, GlobalOpts& g);
 
 - [ ] **Step 2: Update `commands/project_init.cpp`**
 
-Restructure: extract the existing init body into `install_project_init_subcmd`; have `register_project_subcmd` create the parent and call all four installers. The new installers (info/profile/aux) live in `commands/project_tab.cpp` (Task 18); for now the call sites compile because their declarations exist in the header — link will fail until Task 18.
+Restructure: extract the existing init body into `install_project_init_subcmd`; have `register_project_subcmd` create the parent and call all four installers. The new installers (info/profile/aux) live in `commands/project_tab.cpp` — Step 3 below adds it with empty stub bodies so the link is clean immediately. The real bodies arrive in Tasks 18-20.
 
 Replace the existing `register_project_subcmd`:
 
@@ -2428,6 +2495,39 @@ TEST_CASE("orca-cli: project info clear nulls named fields",
     REQUIRE(j["data"]["title"]       == "");
     REQUIRE(j["data"]["description"] == "");
 }
+
+TEST_CASE("orca-cli: project info set --output O writes to O and leaves input untouched",
+          "[orca-cli][project-tab][e2e]")
+{
+    if (ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+    auto tmp = make_temp_dir();
+    auto in  = copy_ref_to_temp(tmp, "info-output");
+    auto out = tmp / "copy.3mf";
+
+    // Snapshot the input bytes so we can verify it wasn't touched.
+    std::ifstream sf(in.string(), std::ios::binary);
+    std::vector<unsigned char> input_before(
+        std::istreambuf_iterator<char>(sf), std::istreambuf_iterator<char>{});
+
+    auto r = run_cli({"project", "info", "set", in.string(),
+                      "--title", "OutputSmoke",
+                      "--output", out.string()});
+    INFO("stdout: " << r.stdout_ << "\nstderr: " << r.stderr_);
+    REQUIRE(r.exit_code == 0);
+
+    // (a) --output path exists and carries the mutation.
+    REQUIRE(fs::exists(out));
+    auto r2 = run_cli({"--json", "project", "info", "show", out.string()});
+    REQUIRE(r2.exit_code == 0);
+    auto j = parse_json_envelope(r2.stdout_);
+    REQUIRE(j["data"]["title"] == "OutputSmoke");
+
+    // (b) input file is byte-equal to before.
+    std::ifstream af(in.string(), std::ios::binary);
+    std::vector<unsigned char> input_after(
+        std::istreambuf_iterator<char>(af), std::istreambuf_iterator<char>{});
+    REQUIRE(input_before == input_after);
+}
 ```
 
 - [ ] **Step 4: Run; verify failures (the verbs don't exist yet)**
@@ -2461,6 +2561,10 @@ namespace {
 
 int do_info_show(const GlobalOpts& g, const std::string& file)
 {
+    // Belt-and-suspenders: --output isn't registered on this subcommand
+    // (CLI11 would reject it as "unknown option" → usage_error), but if a
+    // future refactor re-exposes it accidentally we surface a clear
+    // diagnostic instead of silently ignoring the flag.
     if (g.output.has_value()) {
         print_err(g, ExitCode::usage_error, "project info show does not accept --output");
         return int(ExitCode::usage_error);
@@ -2546,8 +2650,9 @@ void install_project_info_subcmd(CLI::App& project, GlobalOpts& g)
     auto* show = info->add_subcommand("show", "print model metadata fields");
     static std::string show_file;
     show->add_option("file", show_file, "input .3mf path")->required();
-    show->add_option("--output", g.output,
-                     "(rejected on info show; mutating subcommands only)");
+    // Read-only verb: --output is intentionally NOT registered here so
+    // CLI11 rejects it as an unknown option (cleaner --help; the runtime
+    // guard in do_info_show is defense-in-depth).
     show->callback([&g]() { std::exit(do_info_show(g, show_file)); });
 
     // -- set ---------------------------------------------------------------
@@ -2612,11 +2717,12 @@ cmake --build build --config Release --target cli_tests -- -m
 git add src/cli/commands/project_tab.cpp tests/cli/e2e/test_project_tab.cpp tests/cli/CMakeLists.txt
 git commit -m "feat(cli): wire project info {show,set,clear} verbs
 
-+4 e2e cases. show emits human-table or --json envelope (stable
++5 e2e cases. show emits human-table or --json envelope (stable
 six-key shape). set requires >=1 field flag (usage_error otherwise);
 batches via InfoSetParams; --cover routes through embed_cover_image
-(BadCoverImage maps to bad_config). clear takes comma-separated
---field list; InvalidField -> bad_config; idempotent."
+(BadCoverImage maps to bad_config); --output writes a copy without
+touching the input. clear takes comma-separated --field list;
+InvalidField -> bad_config; idempotent."
 ```
 
 ---
@@ -2726,8 +2832,7 @@ void install_project_profile_subcmd(CLI::App& project, GlobalOpts& g)
     auto* show = prof->add_subcommand("show", "print profile metadata fields");
     static std::string show_file;
     show->add_option("file", show_file, "input .3mf path")->required();
-    show->add_option("--output", g.output,
-                     "(rejected on profile show; mutating subcommands only)");
+    // Read-only verb: --output intentionally NOT registered (see info show).
     show->callback([&g]() { std::exit(do_profile_show(g, show_file)); });
 
     auto* set = prof->add_subcommand("set", "set one or more profile metadata fields");
@@ -2783,9 +2888,9 @@ user_name surface read-only in show envelope."
 **Files:**
 - Modify: `src/cli/commands/project_tab.cpp`
 - Modify: `tests/cli/e2e/test_project_tab.cpp`
-- Create: `tests/cli/fixtures/assembly_smoke.pdf` (placeholder; real file lands in Task 23)
+- Create: `tests/cli/fixtures/assembly_smoke.txt` (placeholder; real file lands in Task 22)
 
-For now the e2e tests can use any small file (e.g. the existing `two_cubes.stl`) as the aux payload. The real fixture files (Task 23) replace the throwaway sources before final test run.
+For now the e2e tests can use any small file (e.g. the existing `two_cubes.stl`) as the aux payload. The real fixture files (Task 22) replace the throwaway sources before final test run.
 
 - [ ] **Step 1: Add the failing e2e tests**
 
@@ -2933,6 +3038,8 @@ AuxFolder parse_folder(const std::string& s) {
 
 int do_aux_list(const GlobalOpts& g, const std::string& file)
 {
+    // Belt-and-suspenders (see do_info_show comment): --output isn't
+    // registered on aux list, but guard anyway.
     if (g.output.has_value()) {
         print_err(g, ExitCode::usage_error, "project aux list does not accept --output");
         return int(ExitCode::usage_error);
@@ -3010,6 +3117,8 @@ int do_aux_export(const GlobalOpts& g, const std::string& file,
                   const std::string& folder, const std::string& name,
                   const std::string& to)
 {
+    // Belt-and-suspenders (see do_info_show comment): --output is not
+    // registered on aux export (which uses --to instead), but guard anyway.
     if (g.output.has_value()) {
         print_err(g, ExitCode::usage_error, "project aux export does not accept --output (use --to)");
         return int(ExitCode::usage_error);
@@ -3053,8 +3162,7 @@ void install_project_aux_subcmd(CLI::App& project, GlobalOpts& g)
     auto* list = aux->add_subcommand("list", "list aux entries by bucket");
     static std::string list_file;
     list->add_option("file", list_file, "input .3mf path")->required();
-    list->add_option("--output", g.output,
-                     "(rejected on aux list; mutating subcommands only)");
+    // Read-only verb: --output intentionally NOT registered (see info show).
     list->callback([&g]() { std::exit(do_aux_list(g, list_file)); });
 
     auto* add = aux->add_subcommand("add", "attach a file to an aux bucket");
@@ -3246,7 +3354,7 @@ PNG pass-through); aux add+remove leaves the bucket empty."
 **Files:**
 - Create: `tests/cli/fixtures/cover_smoke.png`
 - Create: `tests/cli/fixtures/cover_smoke.jpg`
-- Create: `tests/cli/fixtures/assembly_smoke.pdf`
+- Create: `tests/cli/fixtures/assembly_smoke.txt`
 
 The PNG is the 67-byte handcrafted 1×1 transparent PNG used in unit-test fixtures (Task 9). Use that same byte sequence so the unit tests and the roundtrip test share the same fixture.
 
@@ -3293,46 +3401,48 @@ $bytes = [byte[]](
 
 Sanity-check that the JPG fails `is_png` (run `is_png rejects JPG signature` unit test from Task 8 against it if you want belt-and-suspenders).
 
-- [ ] **Step 3: Generate `assembly_smoke.pdf`**
+- [ ] **Step 3: Generate `assembly_smoke.txt` (plain text — see decision note)**
+
+The aux pipeline is byte-agnostic — it just copies the source file into
+the chosen bucket — so the fixture format does not affect test
+coverage. A hand-rolled minimal PDF is fragile (xref byte offsets are
+position-sensitive and easy to get wrong; an invalid PDF would still
+PASS the CLI tests but FAIL the Phase 10 GUI smoke when the GUI's
+PDF viewer rejects it). A `.txt` file is unambiguously valid, renders
+fine in the GUI's "Assembly Guide" tab (which shows attached files
+as a list with download buttons, not inline-rendered), and exercises
+exactly the same code paths.
 
 ```powershell
-# Minimal valid PDF 1.4 (single empty page). Bytes lifted from Adobe's
-# "smallest valid PDF" reference. ~500 bytes.
-$pdf = @'
-%PDF-1.4
-1 0 obj
-<<>>
-endobj
-2 0 obj
-<<>>
-endobj
-3 0 obj
-<</Type/Catalog/Pages 4 0 R>>
-endobj
-4 0 obj
-<</Type/Pages/Count 1/Kids[5 0 R]>>
-endobj
-5 0 obj
-<</Type/Page/Parent 4 0 R/MediaBox[0 0 612 792]>>
-endobj
-xref
-0 6
-0000000000 65535 f
-0000000009 00000 n
-0000000026 00000 n
-0000000044 00000 n
-0000000080 00000 n
-0000000123 00000 n
-trailer
-<</Size 6/Root 3 0 R>>
-startxref
-185
-%%EOF
-'@
+$txt = @"
+ORCA-CLI PHASE 10 SMOKE FIXTURE
+================================
+
+This file exists to be attached to a .3mf via
+'orca-cli project aux add --folder assembly-guide --file ...'
+during the Phase 10 manual smoke recipe and the
+[orca-cli][project-tab][e2e] suite.
+
+It is not a real assembly guide. The byte content is irrelevant
+to the test (the aux pipeline only copies bytes); the file is
+plain UTF-8 text so it renders in any tool and never trips a
+file-type validator.
+"@
 [System.IO.File]::WriteAllBytes(
-  "tests\cli\fixtures\assembly_smoke.pdf",
-  [System.Text.Encoding]::ASCII.GetBytes($pdf))
+  "tests\cli\fixtures\assembly_smoke.txt",
+  [System.Text.Encoding]::UTF8.GetBytes($txt))
 ```
+
+Verify: the file is non-empty and human-readable.
+
+```powershell
+Get-Content tests\cli\fixtures\assembly_smoke.txt | Select-Object -First 3
+```
+
+> **Note for executor:** if Phase 10 (Task 23) or any e2e test still
+> references `assembly_smoke.pdf` after the rest of this revision
+> landed, replace those references with `assembly_smoke.txt`. The plan
+> (Task 23) and spec (§ 6.5) have already been updated.
 
 - [ ] **Step 4: Make CMake export `ORCA_CLI_FIXTURES_DIR` (already done in v4 per `tests/cli/CMakeLists.txt`)**
 
@@ -3353,18 +3463,22 @@ cmake --build build --config Release --target cli_tests -- -m
 & "build\tests\cli\Release\cli_tests.exe" --order rand --warn NoAssertions
 ```
 
-- [ ] **Step 6: Commit (binary fixtures)**
+- [ ] **Step 6: Commit fixtures**
 
 ```powershell
-git add tests/cli/fixtures/cover_smoke.png tests/cli/fixtures/cover_smoke.jpg tests/cli/fixtures/assembly_smoke.pdf
-git commit -m "test(cli): commit project-tab fixtures (cover PNG/JPG, assembly PDF)
+git add tests/cli/fixtures/cover_smoke.png tests/cli/fixtures/cover_smoke.jpg tests/cli/fixtures/assembly_smoke.txt
+git commit -m "test(cli): commit project-tab fixtures (cover PNG/JPG, assembly TXT)
 
-cover_smoke.png   (67 B,  1x1 transparent PNG) — happy path for
-                                                 info/profile --cover.
-cover_smoke.jpg   (125 B, 1x1 black JPG)       — exercises
-                                                 BadCoverImage rejection.
-assembly_smoke.pdf (~500 B, minimal PDF)       — aux assembly-guide
-                                                 happy path.
+cover_smoke.png    (67 B,  1x1 transparent PNG) — happy path for
+                                                  info/profile --cover.
+cover_smoke.jpg    (125 B, 1x1 black JPG)       — exercises
+                                                  BadCoverImage rejection.
+assembly_smoke.txt (~400 B, plain UTF-8 text)   — aux assembly-guide
+                                                  happy path. TXT is
+                                                  byte-equivalent for
+                                                  the aux pipeline and
+                                                  avoids the minimal-PDF
+                                                  byte-offset fragility.
 "
 ```
 
@@ -3400,7 +3514,7 @@ before this recipe (copy first).
 $REF  = "tests\cli\fixtures\temp_project_for_orca_slicer.3mf"
 $WORK = "$env:TEMP\orca-cli-phase10.3mf"
 $PNG  = "tests\cli\fixtures\cover_smoke.png"
-$PDF  = "tests\cli\fixtures\assembly_smoke.pdf"
+$TXT  = "tests\cli\fixtures\assembly_smoke.txt"
 Copy-Item $REF $WORK -Force
 
 # 1. Title + description + cover via info set
@@ -3416,7 +3530,7 @@ Copy-Item $REF $WORK -Force
 
 # 3. Aux attachments: assembly guide + picture
 & build\src\Release\orca-cli.exe project aux add $WORK `
-    --folder assembly-guide --file $PDF --name "instructions.pdf"
+    --folder assembly-guide --file $TXT --name "instructions.txt"
 & build\src\Release\orca-cli.exe project aux add $WORK `
     --folder pictures --file $PNG --name "hero.png"
 
@@ -3432,7 +3546,7 @@ tab. Verify:
 - **Profile section:** title = "Profile Smoke"; description visible.
 - **Auxiliary panel (bottom):**
   - **Pictures** tab shows `hero.png`.
-  - **Assembly Guide** tab shows `instructions.pdf`.
+  - **Assembly Guide** tab shows `instructions.txt`.
 
 **Cumulative recipe extension** (run after the Phase 9 cumulative
 recipe in the same `$WORK`): the Phase 10 commands above can be
@@ -3479,7 +3593,7 @@ If `False`, skip this task entirely (status doc may have been removed in a later
 - `project profile {show,set,clear}` — title, description, cover; user_id / user_name read-only
 - `project aux {list,add,remove,export}` — pictures / bom / assembly-guide / others buckets
 
-**Tests:** +~40 cases (24 unit + 13 e2e + 3 roundtrip).
+**Tests:** +40 cases (24 unit + 13 e2e + 3 roundtrip).
 **Spec:** `docs/superpowers/specs/2026-05-20-orca-cli-project-tab-design.md`.
 **Plan:** `docs/superpowers/plans/2026-05-20-orca-cli-project-tab.md`.
 ```
@@ -3511,7 +3625,7 @@ Expected: both targets build cleanly. No warnings introduced (compare against Ta
 & "build\tests\cli\Release\cli_tests.exe" --order rand --warn NoAssertions
 ```
 
-Expected: `All tests passed` ending. Test-case count delta should be exactly **+~40** (24 + 13 + 3) versus Task 0's baseline; if it's off by more than ±2, investigate before shipping.
+Expected: `All tests passed` ending. Test-case count delta should be exactly **+40** (24 unit + 13 e2e + 3 roundtrip) versus Task 0's baseline; if it's off by more than ±2, investigate before shipping.
 
 - [ ] **Step 3: Run the project-tab tag in isolation**
 

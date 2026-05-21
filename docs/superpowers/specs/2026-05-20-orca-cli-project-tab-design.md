@@ -510,17 +510,18 @@ File: `tests/cli/unit/project_ops_test.cpp`
   parent → throws `std::invalid_argument`; destination file already
   exists → silently overwritten (consent via explicit `--to`).
 
-### 6.2 E2E tests (~12 cases)
+### 6.2 E2E tests (~13 cases)
 
 File: `tests/cli/e2e/project_e2e_test.cpp`. Process-level invocations
 of `orca-cli`, exit-code + stdout assertions.
 
 - `info set` happy path → `info show --json` parses and round-trips.
-- `info set` with zero field flags → exit 2.
+- `info set` with zero field flags → exit 1 (`usage_error`, raised by
+  CLI11 or the do_info_set guard).
 - `info set --cover hero.png` → `info show --json` reports canonical
   cover path `Auxiliaries/.thumbnails/thumbnail_3mf.png`.
-- `info set --cover cover_smoke.jpg` → exit 2 with `BadCoverImage`;
-  input 3mf untouched.
+- `info set --cover cover_smoke.jpg` → exit 4 (`bad_config`) with
+  `BadCoverImage`; input 3mf untouched.
 - `info clear --field title,description` → subsequent `info show --json`
   reports both empty.
 - `info show --json` on a pristine 3mf (no `model_info`) emits the
@@ -569,12 +570,12 @@ Added to `docs/cli/manual-test.md` as **Phase 10**:
 1. Copy reference 3mf to TEMP.
 2. orca-cli project info set    --title "Smoke" --description "..." --cover hero.png
 3. orca-cli project profile set --title "Profile Smoke" --cover hero.png
-4. orca-cli project aux add     --folder assembly-guide --file guide.pdf
+4. orca-cli project aux add     --folder assembly-guide --file instructions.txt
 5. orca-cli project aux add     --folder pictures       --file photo.png
 6. Open in OrcaSlicer; Project tab should render:
    - model title/description/cover
    - profile title/cover
-   - guide.pdf under Assembly Guide
+   - instructions.txt under Assembly Guide
    - photo.png under Pictures
 ```
 
@@ -585,16 +586,21 @@ production bugs in v2 per the project memory.
 
 Three tiny files committed to `tests/cli/fixtures/`:
 
-- `cover_smoke.png` (~200 bytes; valid PNG, 1×1 transparent) — happy
+- `cover_smoke.png` (67 bytes; valid PNG, 1×1 transparent) — happy
   path for `info set --cover` / `profile set --cover`.
-- `cover_smoke.jpg` (~300 bytes; valid JPG, 1×1) — used **only** to
+- `cover_smoke.jpg` (~125 bytes; valid JPG, 1×1) — used **only** to
   assert the rejection path (`BadCoverImage`). Per § 3.4 the CLI never
   accepts JPG; the fixture exists so the rejection test isn't shipping
   a hand-rolled JPG byte literal.
-- `assembly_smoke.pdf` (~500 bytes; minimal valid PDF) — happy path
-  for `aux add --folder assembly-guide`.
+- `assembly_smoke.txt` (~400 bytes; plain UTF-8 text) — happy path
+  for `aux add --folder assembly-guide`. The aux pipeline is
+  byte-agnostic (it copies bytes verbatim into the chosen bucket),
+  so a text file gives identical coverage to a PDF while avoiding the
+  fragility of hand-rolling a minimal valid PDF (xref byte offsets
+  are position-sensitive and an invalid PDF would still pass the CLI
+  tests but fail the Phase 10 GUI smoke).
 
-Total <2 KB added to the repo.
+Total <1 KB added to the repo.
 
 ## 7. Out-of-scope follow-ups (future)
 
