@@ -152,49 +152,27 @@ void add_object(ProjectState& s, const AddObjectParams& p)
         throw std::out_of_range("plate not found: " + p.plate_name);
     PlateData* plate = s.plates[plate_idx].get();
 
-    // Load the STL into a scratch Model so we can move the first object
-    // into the project's model without disturbing other state. load_stl
-    // returns false on failure and does not throw, which is friendlier for
-    // mapping to ExitCode::parse_failure at the command layer.
     Model stl_model;
     if (!load_stl(p.stl_path.c_str(), &stl_model, /*object_name*/ nullptr))
         throw std::runtime_error("failed to load STL: " + p.stl_path);
     if (stl_model.objects.empty())
         throw std::runtime_error("STL produced no objects: " + p.stl_path);
 
-    // add_object(const ModelObject&) deep-copies the volumes and re-issues
-    // ObjectIDs so the new object is independent of stl_model (which goes
-    // out of scope at end of function).
-    ModelObject* obj = s.model->add_object(*stl_model.objects.front());
-    obj->name = p.object_name.empty()
+    const std::string final_name = p.object_name.empty()
         ? boost::filesystem::path(p.stl_path).stem().string()
         : p.object_name;
-    obj->input_file = p.stl_path;
-
-    stamp_source_attribution(*obj, p.stl_path);
-
-    // The reference 3mfs already have at least one instance per copied
-    // ModelObject (add_object(const ModelObject&) preserves the original
-    // instance vector). Drop those so we control instance count entirely
-    // via `count` below -- prevents off-by-one when the source STL had a
-    // pre-existing instance.
-    obj->clear_instances();
 
     BoundingBoxf3 bed;
+    // Safe default that covers every printer we ship. Only hit when the
+    // project was loaded without a printable_area config option -- shouldn't
+    // happen for reference 3mfs but we guard anyway.
     if (!read_printable_area_aabb(*s.project_config, bed)) {
-        // Safe default that covers every printer we ship. Only hit when
-        // the project was loaded without a printable_area config option
-        // -- shouldn't happen for reference 3mfs but we guard anyway.
         bed = BoundingBoxf3(Vec3d(0, 0, 0), Vec3d(250, 250, 250));
     }
 
-    // Per-plate origin offset (sqrt grid). Stride MUST match OrcaSlicer's
-    // PartPlateList::plate_stride_{x,y}() which is m_plate_{width,depth} *
-    // (1 + LOGICAL_PART_PLATE_GAP), where LOGICAL_PART_PLATE_GAP = 1/5
-    // (src/slic3r/GUI/PartPlate.cpp:55). Using a fixed +10 mm gap instead
-    // of this proportional stride silently puts grid-placed objects in
-    // the inter-plate gap for any non-256 mm bed when multiple plates
-    // are present.
+    // Per-plate origin offset must match OrcaSlicer's PartPlateList::
+    // plate_stride_{x,y}() == m_plate_{width,depth} * (1 + LOGICAL_PART_PLATE_GAP),
+    // LOGICAL_PART_PLATE_GAP = 1/5 (src/slic3r/GUI/PartPlate.cpp:55).
     constexpr double GUI_PLATE_GAP_RATIO = 1.0 / 5.0;
     const double stride_x = (bed.max.x() - bed.min.x()) * (1.0 + GUI_PLATE_GAP_RATIO);
     const double stride_y = (bed.max.y() - bed.min.y()) * (1.0 + GUI_PLATE_GAP_RATIO);
@@ -203,37 +181,42 @@ void add_object(ProjectState& s, const AddObjectParams& p)
     const BoundingBoxf3 plate_bed(bed.min + plate_origin_offset_v,
                                   bed.max + plate_origin_offset_v);
 
-    const int n       = std::max(1, p.count);
-    const int obj_idx = int(s.model->objects.size() - 1);
-    // bounding_box_exact() would force a mesh evaluation across every
-    // existing instance; we only care about the volume extent for cell
-    // sizing / AABB checks, so raw_mesh_bounding_box is enough and cheaper.
-    const Vec3d bbox_size = obj->raw_mesh_bounding_box().size();
+    const int n = std::max(1, p.count);
+
+    // Use the first STL object's bbox size for grid sizing / off-bed checks.
+    // load_stl returns a Model with one ModelObject; we sample its volume
+    // bbox before issuing any add_object() copies.
+    const Vec3d bbox_size = stl_model.objects.front()->raw_mesh_bounding_box().size();
+
+    // P5: validate --filament slot ONCE up front so a bad slot rejects before
+    // any state change. The validation only inspects project_config; it does
+    // not touch the model, so it is safe to call this early. The actual
+    // per-object write happens inside each branch's loop (see below). Plan
+    // Task 7 will make set_object_filament group-by-name; once it lands, the
+    // trailing call form can replace these inline writes, but for now we
+    // stamp each ModelObject individually so --count N --filament K does NOT
+    // leave N-1 clones with the default extruder.
+    if (p.filament_slot.has_value()) {
+        int slot_count = 0;
+        if (s.project_config) {
+            if (const auto* fsid = s.project_config->option<ConfigOptionStrings>("filament_settings_id"))
+                slot_count = int(fsid->values.size());
+        }
+        if (*p.filament_slot < 1 || *p.filament_slot > slot_count) {
+            throw std::out_of_range(
+                "filament slot " + std::to_string(*p.filament_slot) +
+                " out of range [1.." + std::to_string(slot_count) +
+                "] for object '" + final_name + "'");
+        }
+    }
 
     if (has_explicit_transform(p)) {
-        // Per spec § 4.3: "--count N stacks N copies at the same
-        // post-transform position". All N instances share one offset.
-        //
-        // --translate is plate-local; world_offset folds in the plate's
-        // origin in the GUI's plate-grid layout so a user asking for
-        // (60,60) lands at (60,60) inside the named plate regardless of
-        // which plate it is.
+        // Per spec section 4.3: "--count N stacks N copies at the same
+        // post-transform position". All N independent ModelObjects share one
+        // offset. The off-bed check fires once on the shared offset.
         const Vec3d local_offset = p.translate.value_or(Vec3d::Zero());
         const Vec3d world_offset = plate_bed.min + local_offset;
 
-        // Off-bed AABB check.
-        //
-        // ASSUMPTION: the loaded STL's local origin coincides with its bbox center
-        // (which is the case for STLs the GUI authors, and for our committed test
-        // fixtures). For STLs with origin-at-corner, the world AABB used here is
-        // shifted by half the extent from the true mesh AABB, so this check is
-        // conservative for centered STLs and slightly off for corner-origin ones.
-        // Matches the GUI's own off-bed indicator which uses the same approximation.
-        //
-        // Scale is folded into the half-extent so e.g. --scale 2 near a bed edge
-        // trips the check. Rotation is intentionally NOT folded in (a rotated mesh's
-        // AABB differs from the axis-aligned local-frame AABB; the GUI also doesn't
-        // rotate-then-AABB for its off-bed indicator).
         const Vec3d scale_v = p.scale.value_or(Vec3d::Ones());
         const Vec3d scaled_half = Vec3d(bbox_size.x() * scale_v.x() * 0.5,
                                         bbox_size.y() * scale_v.y() * 0.5,
@@ -252,49 +235,38 @@ void add_object(ProjectState& s, const AddObjectParams& p)
         }
 
         for (int i = 0; i < n; ++i) {
-            ModelInstance* inst = obj->add_instance();
+            ModelObject* obj_i = s.model->add_object(*stl_model.objects.front());
+            obj_i->name       = final_name;
+            obj_i->input_file = p.stl_path;
+            stamp_source_attribution(*obj_i, p.stl_path);
+            obj_i->clear_instances();
+            ModelInstance* inst = obj_i->add_instance();
             inst->set_offset(world_offset);
-            // libslic3r has no ModelObject::set_rotation(Vec3d) /
-            // set_scaling_factor(Vec3d) -- only destructive ModelObject::
-            // rotate/scale which alter the mesh. Per-instance is the
-            // cleaner choice for "rotate/scale the loaded STL once" and
-            // matches how the GUI represents object transforms. We copy
-            // the same rotation/scale onto every stacked instance so the
-            // behavior is identical regardless of which instance the GUI
-            // picks as canonical.
-            if (p.rotate.has_value())
-                inst->set_rotation(*p.rotate);
-            if (p.scale.has_value())
-                inst->set_scaling_factor(*p.scale);
+            if (p.rotate.has_value()) inst->set_rotation(*p.rotate);
+            if (p.scale.has_value())  inst->set_scaling_factor(*p.scale);
             plate->objects_and_instances.emplace_back(
-                obj_idx, int(obj->instances.size() - 1));
+                int(s.model->objects.size() - 1), 0);
+            if (p.filament_slot.has_value())
+                obj_i->config.set("extruder", *p.filament_slot);
         }
     } else {
-        // No explicit transform: deterministic per-plate grid (P3).
+        // No explicit transform: deterministic per-plate grid.
         const int base_idx       = int(plate->objects_and_instances.size());
-        // total_in_plate = pre-existing instance slots on this plate + the
-        // n new ones we're about to add. Passing this to place_in_plate
-        // freezes the grid width across the batch so prior slots don't
-        // get re-mapped as slot indices grow (see placement.cpp comment).
         const int total_in_plate = base_idx + n;
         for (int i = 0; i < n; ++i) {
-            ModelInstance* inst = obj->add_instance();
+            ModelObject* obj_i = s.model->add_object(*stl_model.objects.front());
+            obj_i->name       = final_name;
+            obj_i->input_file = p.stl_path;
+            stamp_source_attribution(*obj_i, p.stl_path);
+            obj_i->clear_instances();
+            ModelInstance* inst = obj_i->add_instance();
             inst->set_offset(place_in_plate(plate_bed, base_idx + i,
                                             total_in_plate, bbox_size));
             plate->objects_and_instances.emplace_back(
-                obj_idx, int(obj->instances.size() - 1));
+                int(s.model->objects.size() - 1), 0);
+            if (p.filament_slot.has_value())
+                obj_i->config.set("extruder", *p.filament_slot);
         }
-    }
-
-    // P5: stamp extruder if --filament was requested. Run after instance
-    // placement so a failing slot validation does not leave a partially
-    // placed half-object behind on the plate (set_object_filament throws
-    // std::out_of_range -> exit 6 in commands/object.cpp). Source
-    // attribution is already in place at this point, so a successful
-    // --filament path preserves the Bug C defense -- the e2e test
-    // assert_parts_have_source_file holds even when filament is set.
-    if (p.filament_slot.has_value()) {
-        set_object_filament(s, obj->name, *p.filament_slot);
     }
 }
 

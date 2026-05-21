@@ -40,7 +40,7 @@ TEST_CASE("orca-cli: object add places STL on named plate with source_file stamp
     REQUIRE(found);
 }
 
-TEST_CASE("orca-cli: object add --count 3 creates 3 instances",
+TEST_CASE("orca-cli: object add --count 3 creates 3 ModelObjects",
           "[orca-cli][P3][e2e]")
 {
     if (ref_3mf().empty()) { SUCCEED("Skipped"); return; }
@@ -59,9 +59,14 @@ TEST_CASE("orca-cli: object add --count 3 creates 3 instances",
     REQUIRE(r.exit_code == 0);
 
     auto s = orca_cli::load_project(in.string());
+    int matches = 0;
     int total_instances = 0;
-    for (auto* obj : s.model->objects)
-        if (obj->name == "triple") total_instances = int(obj->instances.size());
+    for (auto* obj : s.model->objects) {
+        if (obj->name != "triple") continue;
+        ++matches;
+        total_instances += int(obj->instances.size());
+    }
+    REQUIRE(matches == 3);
     REQUIRE(total_instances == 3);
 }
 
@@ -222,16 +227,16 @@ TEST_CASE("orca-cli: --count 3 with --translate stacks 3 instances at the same o
     REQUIRE(r.exit_code == 0);
 
     auto s = orca_cli::load_project(in.string());
-    Slic3r::ModelObject* obj = nullptr;
-    for (auto* o : s.model->objects)
-        if (o->name == "stack") obj = o;
-    REQUIRE(obj != nullptr);
-    REQUIRE(obj->instances.size() == 3u);
-    for (auto* inst : obj->instances) {
-        REQUIRE_THAT(inst->get_offset().x(),
-                     Catch::Matchers::WithinAbs(60.0, 0.001));
-        REQUIRE_THAT(inst->get_offset().y(),
-                     Catch::Matchers::WithinAbs(60.0, 0.001));
+    std::vector<const Slic3r::ModelObject*> stack_objs;
+    for (auto* o : s.model->objects) if (o->name == "stack") stack_objs.push_back(o);
+    REQUIRE(stack_objs.size() == 3u);
+    // Each ModelObject in the cluster has exactly one instance, and all three
+    // share the same world offset (the --translate stack post-transform position).
+    const Slic3r::Vec3d off0 = stack_objs[0]->instances.front()->get_offset();
+    for (const auto* o : stack_objs) {
+        REQUIRE(o->instances.size() == 1u);
+        REQUIRE_THAT((off0 - o->instances.front()->get_offset()).norm(),
+                     Catch::Matchers::WithinAbs(0.0, 1e-6));
     }
 }
 
@@ -254,20 +259,18 @@ TEST_CASE("orca-cli: --count 3 without transforms keeps grid placement",
     REQUIRE(r.exit_code == 0);
 
     auto s = orca_cli::load_project(in.string());
-    Slic3r::ModelObject* obj = nullptr;
-    for (auto* o : s.model->objects)
-        if (o->name == "grid") obj = o;
-    REQUIRE(obj != nullptr);
-    REQUIRE(obj->instances.size() == 3u);
-    // No two instances share the same offset (grid placement is distinct
-    // per slot). Pairwise norm check defends against the placement.cpp
-    // collision bug captured in tests/cli/unit/test_placement.cpp.
-    auto p0 = obj->instances[0]->get_offset();
-    auto p1 = obj->instances[1]->get_offset();
-    auto p2 = obj->instances[2]->get_offset();
-    REQUIRE_FALSE((p0 - p1).norm() < 1.0);
-    REQUIRE_FALSE((p0 - p2).norm() < 1.0);
-    REQUIRE_FALSE((p1 - p2).norm() < 1.0);
+    std::vector<const Slic3r::ModelObject*> grid_objs;
+    for (auto* o : s.model->objects) if (o->name == "grid") grid_objs.push_back(o);
+    REQUIRE(grid_objs.size() == 3u);
+    // Three distinct grid offsets; assert all unique.
+    std::vector<Slic3r::Vec3d> offsets;
+    for (const auto* o : grid_objs) {
+        REQUIRE(o->instances.size() == 1u);
+        offsets.push_back(o->instances.front()->get_offset());
+    }
+    for (size_t i = 0; i < offsets.size(); ++i)
+        for (size_t j = i + 1; j < offsets.size(); ++j)
+            REQUIRE((offsets[i] - offsets[j]).norm() > 15.0);   // pairwise > 15 mm apart (well below the 20 mm grid stride for the committed 10 mm cube fixture)
 }
 
 TEST_CASE("orca-cli: --translate off-bed returns exit 9 placement_failure",

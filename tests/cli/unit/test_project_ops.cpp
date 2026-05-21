@@ -184,7 +184,7 @@ TEST_CASE("orca-cli: add_object loads STL, stamps source attribution, places on 
     REQUIRE(found_on_plate);
 }
 
-TEST_CASE("orca-cli: add_object with count=3 creates 3 instances",
+TEST_CASE("orca-cli: add_object with count=3 creates 3 ModelObjects (1 instance each)",
           "[orca-cli][P3][unit]")
 {
     if (orca_cli_test::ref_3mf().empty()) { SUCCEED("Skipped"); return; }
@@ -195,13 +195,19 @@ TEST_CASE("orca-cli: add_object with count=3 creates 3 instances",
     add_plate(s, "P3Count");
 
     AddObjectParams p;
-    p.plate_name = "P3Count";
-    p.stl_path   = stl.string();
-    p.count      = 3;
+    p.plate_name  = "P3Count";
+    p.stl_path    = stl.string();
+    p.object_name = "C";
+    p.count       = 3;
     add_object(s, p);
 
-    auto* obj = s.model->objects.back();
-    REQUIRE(obj->instances.size() == 3u);
+    int matches = 0;
+    for (const auto* obj : s.model->objects) {
+        if (obj->name != "C") continue;
+        ++matches;
+        REQUIRE(obj->instances.size() == 1u);
+    }
+    REQUIRE(matches == 3);
 }
 
 TEST_CASE("orca-cli: add_object rejects unknown plate",
