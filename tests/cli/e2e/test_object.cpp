@@ -660,3 +660,32 @@ TEST_CASE("orca-cli: --count 3 survives load+save roundtrip",
     }
     REQUIRE(plate_entries_for_c == 3);
 }
+
+// 2026-05-21 cross-project audit v2, item 1 cont'd: --count N produces N
+// independent ModelObjects sharing one name. `object remove --name X` must
+// therefore remove ALL of them (group-by-name), otherwise the user would
+// have to issue one remove per copy.
+TEST_CASE("orca-cli: object remove with --count N removes every clone",
+          "[orca-cli][P3][e2e][group-remove]")
+{
+    if (ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+    auto cube = (stl_dir() / "000_01_test_cube.stl");
+    if (!fs::exists(cube)) { SUCCEED("Skipped"); return; }
+
+    auto tmp = make_temp_dir();
+    auto in  = copy_ref_to_temp(tmp, "group-remove");
+    REQUIRE(run_cli({"plate", "add", in.string(), "--name", "R"}).exit_code == 0);
+    REQUIRE(run_cli({"object", "add", in.string(),
+                     "--plate", "R",
+                     "--stl",   cube.string(),
+                     "--count", "3",
+                     "--name",  "trio"}).exit_code == 0);
+    REQUIRE(run_cli({"object", "remove", in.string(),
+                     "--name", "trio"}).exit_code == 0);
+
+    auto s = orca_cli::load_project(in.string());
+    int remaining = 0;
+    for (const auto* o : s.model->objects)
+        if (o->name == "trio") ++remaining;
+    REQUIRE(remaining == 0);
+}
