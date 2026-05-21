@@ -603,3 +603,57 @@ TEST_CASE("orca-cli: object list --plate P filters to objects on the named plate
     INFO("stdout: " << r2.stdout_ << "\nstderr: " << r2.stderr_);
     REQUIRE(r2.exit_code == 6);
 }
+
+// 2026-05-21 cross-project audit v2, item 1: silent data-loss regression.
+// `obj_inst_map.emplace(object_id, ...)` at src/libslic3r/Format/bbs_3mf.cpp:4697
+// collapses N <plater_instance> entries into one on reload, so a single-object-
+// with-N-instances model loses N-1 instances on every save+load round-trip.
+// This test asserts the saved 3mf survives a *second* save (load -> trivial
+// mutation -> save) with all three units of the --count 3 group still present.
+TEST_CASE("orca-cli: --count 3 survives load+save roundtrip",
+          "[orca-cli][P3][e2e][count-roundtrip]")
+{
+    if (ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+    auto cube = (stl_dir() / "000_01_test_cube.stl");
+    if (!fs::exists(cube)) { SUCCEED("Skipped"); return; }
+
+    auto tmp = make_temp_dir();
+    auto in  = copy_ref_to_temp(tmp, "count-roundtrip");
+
+    REQUIRE(run_cli({"plate", "add", in.string(), "--name", "P"}).exit_code == 0);
+    REQUIRE(run_cli({"object", "add", in.string(),
+                     "--plate", "P",
+                     "--stl",   cube.string(),
+                     "--count", "3",
+                     "--name",  "C"}).exit_code == 0);
+    // Trivial second mutation forces a load+save cycle.
+    REQUIRE(run_cli({"plate", "rename", in.string(),
+                     "--from", "P", "--to", "Pp"}).exit_code == 0);
+
+    auto s = orca_cli::load_project(in.string());
+
+    // Group semantics: --count 3 produces 3 distinct ModelObjects named "C",
+    // each with exactly 1 ModelInstance.
+    int objects_named_c = 0;
+    int instance_total  = 0;
+    for (const auto* obj : s.model->objects) {
+        if (obj->name == "C") {
+            ++objects_named_c;
+            instance_total += int(obj->instances.size());
+        }
+    }
+    REQUIRE(objects_named_c == 3);
+    REQUIRE(instance_total  == 3);
+
+    // The plate must reference all 3 instances after the round-trip (this is
+    // the bug-detecting assertion -- pre-fix this drops to 1).
+    int plate_entries_for_c = 0;
+    for (const auto& pd : s.plates) {
+        if (pd->plate_name != "Pp") continue;
+        for (const auto& kv : pd->objects_and_instances) {
+            const Slic3r::ModelObject* obj = s.model->objects[size_t(kv.first)];
+            if (obj->name == "C") ++plate_entries_for_c;
+        }
+    }
+    REQUIRE(plate_entries_for_c == 3);
+}
