@@ -1,5 +1,6 @@
 // src/cli/project_tab_ops.cpp
 #include "project_tab_ops.hpp"
+#include <algorithm>
 #include <stdexcept>
 
 namespace orca_cli {
@@ -64,8 +65,39 @@ void info_set(ProjectState& s, const InfoSetParams& p) {
     if (p.copyright)   mi.copyright   = *p.copyright;
     if (p.cover)       embed_cover_image(s, *p.cover, CoverTarget::Info);
 }
-const std::vector<std::string>& allowed_info_fields()                { throw std::logic_error("not implemented"); }
-void info_clear(ProjectState&, const std::vector<std::string>&)      { throw std::logic_error("not implemented"); }
+const std::vector<std::string>& allowed_info_fields() {
+    static const std::vector<std::string> v{
+        "title", "description", "license", "copyright", "cover"
+    };
+    return v;
+}
+
+void info_clear(ProjectState& s, const std::vector<std::string>& fields) {
+    const auto& allowed = allowed_info_fields();
+    for (const auto& f : fields) {
+        if (std::find(allowed.begin(), allowed.end(), f) == allowed.end()) {
+            std::string msg = "unknown field: '" + f + "'. Allowed:";
+            for (const auto& a : allowed) msg += " " + a;
+            throw InvalidField(msg);
+        }
+    }
+    if (!s.model->model_info) {
+        // Nothing to clear on string fields. cover-clear may still need to
+        // run if the canonical embedded image exists (handled by
+        // clear_cover_image, which is a no-op on a missing file).
+        for (const auto& f : fields)
+            if (f == "cover") clear_cover_image(s, CoverTarget::Info);
+        return;
+    }
+    auto& mi = *s.model->model_info;
+    for (const auto& f : fields) {
+        if      (f == "title")       mi.model_name.clear();
+        else if (f == "description") mi.description.clear();
+        else if (f == "license")     mi.license.clear();
+        else if (f == "copyright")   mi.copyright.clear();
+        else if (f == "cover")       clear_cover_image(s, CoverTarget::Info);
+    }
+}
 
 ProfileView profile_view(const ProjectState&)                        { throw std::logic_error("not implemented"); }
 bool any_field_set(const ProfileSetParams&)                          { throw std::logic_error("not implemented"); }

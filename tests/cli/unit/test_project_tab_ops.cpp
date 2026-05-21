@@ -10,6 +10,7 @@
 
 #include <boost/filesystem.hpp>
 
+#include <algorithm>
 #include <memory>
 #include <string>
 
@@ -106,4 +107,60 @@ TEST_CASE("orca-cli: info_set is idempotent (re-set same value is fine)",
     info_set(s, p);
     info_set(s, p);
     REQUIRE(s.model->model_info->model_name == "T");
+}
+
+TEST_CASE("orca-cli: allowed_info_fields lists exactly the five legal names",
+          "[orca-cli][project-tab][unit]")
+{
+    const auto& names = allowed_info_fields();
+    REQUIRE(names.size() == 5);
+    REQUIRE(std::count(names.begin(), names.end(), "title")       == 1);
+    REQUIRE(std::count(names.begin(), names.end(), "description") == 1);
+    REQUIRE(std::count(names.begin(), names.end(), "license")     == 1);
+    REQUIRE(std::count(names.begin(), names.end(), "copyright")   == 1);
+    REQUIRE(std::count(names.begin(), names.end(), "cover")       == 1);
+}
+
+TEST_CASE("orca-cli: info_clear nulls a single named string field",
+          "[orca-cli][project-tab][unit]")
+{
+    auto s = make_empty_state();
+    InfoSetParams p; p.title = "T"; p.description = "D";
+    info_set(s, p);
+    info_clear(s, {"title"});
+    REQUIRE(s.model->model_info->model_name.empty());
+    REQUIRE(s.model->model_info->description == "D");  // untouched
+}
+
+TEST_CASE("orca-cli: info_clear nulls multiple fields in one call",
+          "[orca-cli][project-tab][unit]")
+{
+    auto s = make_empty_state();
+    InfoSetParams p;
+    p.title = "T"; p.description = "D"; p.license = "MIT"; p.copyright = "C";
+    info_set(s, p);
+    info_clear(s, {"title", "license"});
+    REQUIRE(s.model->model_info->model_name.empty());
+    REQUIRE(s.model->model_info->license.empty());
+    REQUIRE(s.model->model_info->description == "D");
+    REQUIRE(s.model->model_info->copyright   == "C");
+}
+
+TEST_CASE("orca-cli: info_clear rejects unknown field with InvalidField",
+          "[orca-cli][project-tab][unit]")
+{
+    auto s = make_empty_state();
+    REQUIRE_THROWS_AS(info_clear(s, {"profile_title"}), InvalidField);
+    REQUIRE_THROWS_AS(info_clear(s, {"title", "bogus"}), InvalidField);
+}
+
+TEST_CASE("orca-cli: info_clear is idempotent on an already-empty field",
+          "[orca-cli][project-tab][unit]")
+{
+    auto s = make_empty_state();
+    REQUIRE_NOTHROW(info_clear(s, {"title"}));  // model_info still nullptr
+    InfoSetParams p; p.title = "X"; info_set(s, p);
+    REQUIRE_NOTHROW(info_clear(s, {"title"}));
+    REQUIRE_NOTHROW(info_clear(s, {"title"}));  // double-clear no-op
+    REQUIRE(s.model->model_info->model_name.empty());
 }
