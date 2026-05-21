@@ -183,7 +183,29 @@ std::vector<AuxEntry> aux_list(const ProjectState& s) {
     }
     return out;
 }
-void aux_add(ProjectState&, const AuxAddParams&)                     { throw std::logic_error("not implemented"); }
+void aux_add(ProjectState& s, const AuxAddParams& p) {
+    boost::system::error_code ec;
+    if (!boost::filesystem::is_regular_file(p.file, ec))
+        throw BadAuxFile("aux source file not found or not readable: " + p.file.string());
+
+    std::string raw_name = p.name.value_or(p.file.filename().string());
+    std::string clean = sanitize_aux_name(raw_name);  // throws AuxNameError
+
+    auto aux_root = boost::filesystem::path(s.model->get_auxiliary_file_temp_path());
+    auto sub = aux_root / folder_subdir(p.folder);
+    boost::filesystem::create_directories(sub, ec);
+    if (ec) throw BadAuxFile("failed to prepare aux dir " + sub.string() + ": " + ec.message());
+
+    auto dst = sub / clean;
+    if (boost::filesystem::exists(dst, ec) && !p.force)
+        throw AuxCollisionError("aux entry already exists: "
+            + std::string(folder_flag(p.folder)) + "/" + clean
+            + " (pass --force to overwrite)");
+
+    boost::filesystem::copy_file(p.file, dst,
+        boost::filesystem::copy_options::overwrite_existing, ec);
+    if (ec) throw BadAuxFile("failed to copy aux file: " + ec.message());
+}
 void aux_remove(ProjectState&, AuxFolder, const std::string&)        { throw std::logic_error("not implemented"); }
 void aux_export(const ProjectState&, AuxFolder, const std::string&,
                 const boost::filesystem::path&)                      { throw std::logic_error("not implemented"); }

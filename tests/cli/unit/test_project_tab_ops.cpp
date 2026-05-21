@@ -566,3 +566,96 @@ TEST_CASE("orca-cli: aux_list walks every populated bucket and stamps size",
     REQUIRE(saw_hero);
     REQUIRE(saw_parts);
 }
+
+TEST_CASE("orca-cli: aux_add happy path copies source into bucket",
+          "[orca-cli][project-tab][unit]")
+{
+    auto tmp = orca_cli_test::make_temp_dir();
+    auto src = tmp / "hero.png"; write_tiny_png(src);
+
+    auto s = make_empty_state();
+    AuxAddParams p; p.folder = AuxFolder::pictures; p.file = src;
+    aux_add(s, p);
+
+    auto aux_root = boost::filesystem::path(s.model->get_auxiliary_file_temp_path());
+    auto landed = aux_root / folder_subdir(AuxFolder::pictures) / "hero.png";
+    REQUIRE(boost::filesystem::exists(landed));
+    REQUIRE(read_all(landed) == read_all(src));
+}
+
+TEST_CASE("orca-cli: aux_add --name overrides in-3mf basename",
+          "[orca-cli][project-tab][unit]")
+{
+    auto tmp = orca_cli_test::make_temp_dir();
+    auto src = tmp / "local.png"; write_tiny_png(src);
+
+    auto s = make_empty_state();
+    AuxAddParams p; p.folder = AuxFolder::pictures; p.file = src;
+    p.name = std::string("renamed.png");
+    aux_add(s, p);
+
+    auto aux_root = boost::filesystem::path(s.model->get_auxiliary_file_temp_path());
+    auto landed = aux_root / folder_subdir(AuxFolder::pictures) / "renamed.png";
+    REQUIRE(boost::filesystem::exists(landed));
+    REQUIRE_FALSE(boost::filesystem::exists(aux_root / folder_subdir(AuxFolder::pictures) / "local.png"));
+}
+
+TEST_CASE("orca-cli: aux_add rejects missing source with BadAuxFile",
+          "[orca-cli][project-tab][unit]")
+{
+    auto tmp = orca_cli_test::make_temp_dir();
+    auto src = tmp / "does_not_exist.pdf";
+    auto s = make_empty_state();
+    AuxAddParams p; p.folder = AuxFolder::bom; p.file = src;
+    REQUIRE_THROWS_AS(aux_add(s, p), BadAuxFile);
+}
+
+TEST_CASE("orca-cli: aux_add collision throws AuxCollisionError without --force",
+          "[orca-cli][project-tab][unit]")
+{
+    auto tmp = orca_cli_test::make_temp_dir();
+    auto src = tmp / "x.png"; write_tiny_png(src);
+
+    auto s = make_empty_state();
+    AuxAddParams p; p.folder = AuxFolder::pictures; p.file = src;
+    aux_add(s, p);
+    REQUIRE_THROWS_AS(aux_add(s, p), AuxCollisionError);
+}
+
+TEST_CASE("orca-cli: aux_add --force overwrites existing entry",
+          "[orca-cli][project-tab][unit]")
+{
+    auto tmp = orca_cli_test::make_temp_dir();
+    auto src1 = tmp / "v1.png"; write_tiny_png(src1);
+    auto src2 = tmp / "v2.png";
+    {
+        // distinct bytes by re-writing the same PNG then padding with one
+        // extra byte at end:
+        auto bytes = read_all(src1);
+        bytes.push_back(0xFF);
+        std::ofstream(src2.string(), std::ios::binary)
+            .write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+    }
+
+    auto s = make_empty_state();
+    AuxAddParams p1; p1.folder = AuxFolder::others; p1.file = src1;
+    p1.name = std::string("a.bin"); aux_add(s, p1);
+
+    AuxAddParams p2; p2.folder = AuxFolder::others; p2.file = src2;
+    p2.name = std::string("a.bin"); p2.force = true; aux_add(s, p2);
+
+    auto landed = boost::filesystem::path(s.model->get_auxiliary_file_temp_path())
+                  / folder_subdir(AuxFolder::others) / "a.bin";
+    REQUIRE(read_all(landed) == read_all(src2));
+}
+
+TEST_CASE("orca-cli: aux_add propagates AuxNameError from sanitization",
+          "[orca-cli][project-tab][unit]")
+{
+    auto tmp = orca_cli_test::make_temp_dir();
+    auto src = tmp / "x.png"; write_tiny_png(src);
+    auto s = make_empty_state();
+    AuxAddParams p; p.folder = AuxFolder::pictures; p.file = src;
+    p.name = std::string("CON.png");  // Windows-reserved
+    REQUIRE_THROWS_AS(aux_add(s, p), AuxNameError);
+}
