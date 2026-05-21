@@ -11,6 +11,7 @@
 #include <boost/filesystem.hpp>
 
 #include <algorithm>
+#include <fstream>
 #include <memory>
 #include <string>
 
@@ -163,4 +164,47 @@ TEST_CASE("orca-cli: info_clear is idempotent on an already-empty field",
     REQUIRE_NOTHROW(info_clear(s, {"title"}));
     REQUIRE_NOTHROW(info_clear(s, {"title"}));  // double-clear no-op
     REQUIRE(s.model->model_info->model_name.empty());
+}
+
+TEST_CASE("orca-cli: is_png accepts valid 8-byte PNG signature",
+          "[orca-cli][project-tab][unit]")
+{
+    auto p = orca_cli_test::make_temp_dir() / "valid.png";
+    {
+        std::ofstream f(p.string(), std::ios::binary);
+        const unsigned char sig[8] = {0x89,0x50,0x4E,0x47,0x0D,0x0A,0x1A,0x0A};
+        f.write(reinterpret_cast<const char*>(sig), 8);
+    }
+    REQUIRE(is_png(p));
+}
+
+TEST_CASE("orca-cli: is_png rejects JPG signature",
+          "[orca-cli][project-tab][unit]")
+{
+    auto p = orca_cli_test::make_temp_dir() / "actually.jpg";
+    {
+        std::ofstream f(p.string(), std::ios::binary);
+        const unsigned char sig[8] = {0xFF,0xD8,0xFF,0xE0,0x00,0x10,0x4A,0x46};
+        f.write(reinterpret_cast<const char*>(sig), 8);
+    }
+    REQUIRE_FALSE(is_png(p));
+}
+
+TEST_CASE("orca-cli: is_png rejects truncated files (<8 bytes)",
+          "[orca-cli][project-tab][unit]")
+{
+    auto p = orca_cli_test::make_temp_dir() / "tiny.png";
+    {
+        std::ofstream f(p.string(), std::ios::binary);
+        const unsigned char sig[4] = {0x89,0x50,0x4E,0x47};  // only 4 of 8
+        f.write(reinterpret_cast<const char*>(sig), 4);
+    }
+    REQUIRE_FALSE(is_png(p));
+}
+
+TEST_CASE("orca-cli: is_png returns false on missing file (no throw)",
+          "[orca-cli][project-tab][unit]")
+{
+    auto p = orca_cli_test::make_temp_dir() / "does_not_exist.png";
+    REQUIRE_FALSE(is_png(p));
 }

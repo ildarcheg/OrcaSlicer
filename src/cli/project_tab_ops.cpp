@@ -1,7 +1,10 @@
 // src/cli/project_tab_ops.cpp
 #include "project_tab_ops.hpp"
 #include <algorithm>
+#include <fstream>
 #include <stdexcept>
+
+#include <boost/system/error_code.hpp>
 
 namespace orca_cli {
 
@@ -111,7 +114,19 @@ void aux_remove(ProjectState&, AuxFolder, const std::string&)        { throw std
 void aux_export(const ProjectState&, AuxFolder, const std::string&,
                 const boost::filesystem::path&)                      { throw std::logic_error("not implemented"); }
 
-bool is_png(const boost::filesystem::path&)                          { throw std::logic_error("not implemented"); }
+bool is_png(const boost::filesystem::path& p) {
+    boost::system::error_code ec;
+    if (!boost::filesystem::is_regular_file(p, ec)) return false;
+    std::ifstream f(p.string(), std::ios::binary);
+    if (!f) return false;
+    unsigned char buf[8] = {};
+    f.read(reinterpret_cast<char*>(buf), 8);
+    if (f.gcount() != 8) return false;
+    static constexpr unsigned char kPngSig[8] = {0x89,0x50,0x4E,0x47,0x0D,0x0A,0x1A,0x0A};
+    for (int i = 0; i < 8; ++i)
+        if (buf[i] != kPngSig[i]) return false;
+    return true;
+}
 void embed_cover_image(ProjectState&, const boost::filesystem::path&,
                        CoverTarget)                                  { throw std::logic_error("not implemented"); }
 void clear_cover_image(ProjectState&, CoverTarget)                   { throw std::logic_error("not implemented"); }
