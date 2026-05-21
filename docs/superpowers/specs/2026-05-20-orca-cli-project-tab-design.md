@@ -55,11 +55,16 @@ orca-cli project profile set     <file> [--title T] [--description D]
 orca-cli project profile clear   <file> --field F[,F2,...]    [--output O]
 
 orca-cli project aux list        <file>                                   # human / --json
-orca-cli project aux add         <file> --folder pictures|bom|assembly-guide|others
-                                        --file PATH [--name N] [--force] [--output O]
+orca-cli project aux add         <input> --folder pictures|bom|assembly-guide|others
+                                         --file PATH [--name N] [--force] [--output O]
 orca-cli project aux remove      <file> --folder F --name N   [--output O]
 orca-cli project aux export      <file> --folder F --name N --to PATH
 ```
+
+> Note: this verb's positional is `<input>` (not `<file>` like `info show` /
+> `profile show`) because CLI11 forbids registering both a positional named
+> `file` and an option `--file` on the same subcommand. The synopsis above
+> matches the binary's actual `--help` output.
 
 ### 2.1 Semantics
 
@@ -332,7 +337,7 @@ only deleted when both `info` and `profile` cover pointers are empty.
 - Load → walk the four bucket directories under
   `model.get_auxiliary_file_temp_path()` → emit table or JSON. No write.
 
-### `project aux add <file> --folder F --file PATH [--name N] [--force]`
+### `project aux add <input> --folder F --file PATH [--name N] [--force]`
 1. Validate `--folder` against the enum. CLI11's `CheckedTransformer`
    rejects unknown values with `usage_error` (exit 1) before our
    callback runs.
