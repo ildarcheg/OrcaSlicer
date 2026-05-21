@@ -102,6 +102,70 @@ std::vector<std::string> split_csv(const std::string& s) {
     return out;
 }
 
+// -- profile show -----------------------------------------------------------
+
+int do_profile_show(const GlobalOpts& g, const std::string& file)
+{
+    if (g.output.has_value()) {
+        print_err(g, ExitCode::usage_error, "project profile show does not accept --output");
+        return int(ExitCode::usage_error);
+    }
+    if (int rc = check_input_exists(g, file); rc != int(ExitCode::ok)) return rc;
+
+    ProjectState state;
+    try {
+        state = load_project(file);
+    } catch (const std::exception& e) {
+        print_err(g, ExitCode::parse_failure, e.what());
+        return int(ExitCode::parse_failure);
+    }
+    auto v = profile_view(state);
+    if (g.json) {
+        nlohmann::json data{
+            {"title",       v.title},
+            {"description", v.description},
+            {"cover",       v.cover},
+            {"user_id",     v.user_id},
+            {"user_name",   v.user_name},
+        };
+        print_ok(g, "profile", data);
+    } else {
+        std::fputs(("title:       " + v.title       + "\n").c_str(), stdout);
+        std::fputs(("description: " + v.description + "\n").c_str(), stdout);
+        std::fputs(("cover:       " + v.cover       + "\n").c_str(), stdout);
+        std::fputs(("user_id:     " + v.user_id     + "\n").c_str(), stdout);
+        std::fputs(("user_name:   " + v.user_name   + "\n").c_str(), stdout);
+        std::fflush(stdout);
+    }
+    return int(ExitCode::ok);
+}
+
+// -- profile set ------------------------------------------------------------
+
+int do_profile_set(const GlobalOpts& g, const std::string& file, const ProfileSetParams& p)
+{
+    if (!any_field_set(p)) {
+        print_err(g, ExitCode::usage_error,
+                  "project profile set requires at least one of --title/--description/--cover");
+        return int(ExitCode::usage_error);
+    }
+    MutationExceptionMap em;
+    em.on<BadCoverImage>(ExitCode::bad_config);
+    return run_mutation(g, file, "profile set applied", em,
+        [&](ProjectState& s) { profile_set(s, p); });
+}
+
+// -- profile clear ----------------------------------------------------------
+
+int do_profile_clear(const GlobalOpts& g, const std::string& file,
+                     const std::vector<std::string>& fields)
+{
+    MutationExceptionMap em;
+    em.on<InvalidField>(ExitCode::bad_config);
+    return run_mutation(g, file, "profile cleared", em,
+        [&](ProjectState& s) { profile_clear(s, fields); });
+}
+
 } // namespace
 
 void install_project_info_subcmd(CLI::App& project, GlobalOpts& g)
@@ -158,7 +222,51 @@ void install_project_info_subcmd(CLI::App& project, GlobalOpts& g)
     });
 }
 
-void install_project_profile_subcmd(CLI::App& /*project*/, GlobalOpts& /*g*/) {}
+void install_project_profile_subcmd(CLI::App& project, GlobalOpts& g)
+{
+    auto* prof = project.add_subcommand("profile", "print-profile metadata (Project tab)");
+
+    // -- show ----------------------------------------------------------------
+    auto* show = prof->add_subcommand("show", "print profile metadata fields");
+    static std::string show_file;
+    show->add_option("file", show_file, "input .3mf path")->required();
+    // Read-only verb: --output intentionally NOT registered (see info show).
+    show->callback([&g]() { std::exit(do_profile_show(g, show_file)); });
+
+    // -- set -----------------------------------------------------------------
+    auto* set = prof->add_subcommand("set", "set one or more profile metadata fields");
+    static std::string set_file, s_title, s_desc, s_cover;
+    static bool h_title=false, h_desc=false, h_cover=false;
+    set->add_option("file", set_file, "input .3mf path")->required();
+    set->add_option("--title",       s_title, "profile title")->each([&](const std::string&){h_title=true;});
+    set->add_option("--description", s_desc,  "profile description")->each([&](const std::string&){h_desc=true;});
+    set->add_option("--cover",       s_cover, "PNG cover image (file path)")->each([&](const std::string&){h_cover=true;});
+    set->add_option("--output", g.output,
+                    "write result to this path instead of overwriting input");
+    set->callback([&g]() {
+        ProfileSetParams p;
+        if (h_title) p.title       = s_title;
+        if (h_desc)  p.description = s_desc;
+        if (h_cover) p.cover       = boost::filesystem::path(s_cover);
+        int rc = do_profile_set(g, set_file, p);
+        h_title=h_desc=h_cover=false;
+        std::exit(rc);
+    });
+
+    // -- clear ---------------------------------------------------------------
+    auto* clear = prof->add_subcommand("clear", "null one or more profile metadata fields");
+    static std::string clear_file, clear_fields_csv;
+    clear->add_option("file", clear_file, "input .3mf path")->required();
+    clear->add_option("--field", clear_fields_csv,
+                      "comma-separated field names (title,description,cover)")->required();
+    clear->add_option("--output", g.output,
+                      "write result to this path instead of overwriting input");
+    clear->callback([&g]() {
+        auto fields = split_csv(clear_fields_csv);
+        std::exit(do_profile_clear(g, clear_file, fields));
+    });
+}
+
 void install_project_aux_subcmd    (CLI::App& /*project*/, GlobalOpts& /*g*/) {}
 
 } // namespace orca_cli::commands

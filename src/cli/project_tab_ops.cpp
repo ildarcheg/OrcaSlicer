@@ -126,8 +126,19 @@ void profile_set(ProjectState& s, const ProfileSetParams& p) {
     if (!s.model->profile_info)
         s.model->profile_info = std::make_shared<Slic3r::ModelProfileInfo>();
     auto& pi = *s.model->profile_info;
-    if (p.title)       pi.ProfileTile        = *p.title;
-    if (p.description) pi.ProfileDescription = *p.description;
+    // Mirror each mutation into model_info.metadata_items so that
+    // store_bbs_3mf (which serialises those items) persists the change.
+    if (!s.model->model_info)
+        s.model->model_info = std::make_shared<Slic3r::ModelInfo>();
+    auto& mi = *s.model->model_info;
+    if (p.title) {
+        pi.ProfileTile                   = *p.title;
+        mi.metadata_items["ProfileTitle"] = *p.title;
+    }
+    if (p.description) {
+        pi.ProfileDescription                   = *p.description;
+        mi.metadata_items["ProfileDescription"] = *p.description;
+    }
     if (p.cover)       embed_cover_image(s, *p.cover, CoverTarget::Profile);
 }
 
@@ -145,16 +156,30 @@ void profile_clear(ProjectState& s, const std::vector<std::string>& fields) {
             throw InvalidField(msg);
         }
     }
+    // Ensure model_info exists so metadata_items can be cleared too.
+    if (!s.model->model_info)
+        s.model->model_info = std::make_shared<Slic3r::ModelInfo>();
+    auto& mi = *s.model->model_info;
+
     if (!s.model->profile_info) {
-        for (const auto& f : fields)
-            if (f == "cover") clear_cover_image(s, CoverTarget::Profile);
+        for (const auto& f : fields) {
+            if      (f == "cover") clear_cover_image(s, CoverTarget::Profile);
+            else if (f == "title") mi.metadata_items["ProfileTitle"].clear();
+            else if (f == "description") mi.metadata_items["ProfileDescription"].clear();
+        }
         return;
     }
     auto& pi = *s.model->profile_info;
     for (const auto& f : fields) {
-        if      (f == "title")       pi.ProfileTile.clear();
-        else if (f == "description") pi.ProfileDescription.clear();
-        else if (f == "cover")       clear_cover_image(s, CoverTarget::Profile);
+        if      (f == "title") {
+            pi.ProfileTile.clear();
+            mi.metadata_items["ProfileTitle"].clear();
+        } else if (f == "description") {
+            pi.ProfileDescription.clear();
+            mi.metadata_items["ProfileDescription"].clear();
+        } else if (f == "cover") {
+            clear_cover_image(s, CoverTarget::Profile);
+        }
     }
 }
 

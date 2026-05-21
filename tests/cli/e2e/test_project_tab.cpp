@@ -86,6 +86,25 @@ TEST_CASE("orca-cli: project info clear nulls named fields",
     REQUIRE(j["data"]["description"] == "");
 }
 
+TEST_CASE("orca-cli: project profile set + show --json round-trips fields",
+          "[orca-cli][project-tab][e2e]")
+{
+    if (ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+    auto tmp = make_temp_dir();
+    auto in  = copy_ref_to_temp(tmp, "profile-set");
+    REQUIRE(run_cli({"project", "profile", "set", in.string(),
+                     "--title", "PT", "--description", "PD"}).exit_code == 0);
+
+    auto r = run_cli({"--json", "project", "profile", "show", in.string()});
+    INFO("show stdout: " << r.stdout_);
+    REQUIRE(r.exit_code == 0);
+    auto j = parse_json_envelope(r.stdout_);
+    REQUIRE(j["data"]["title"]       == "PT");
+    REQUIRE(j["data"]["description"] == "PD");
+    REQUIRE(j["data"].contains("user_id"));    // read-only, always present
+    REQUIRE(j["data"].contains("user_name"));
+}
+
 TEST_CASE("orca-cli: project info set --output O writes to O and leaves input untouched",
           "[orca-cli][project-tab][e2e]")
 {
