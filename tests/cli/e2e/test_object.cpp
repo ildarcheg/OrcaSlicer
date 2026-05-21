@@ -6,7 +6,11 @@
 
 #include <nlohmann/json.hpp>
 
+#include <libslic3r/miniz_extension.hpp>
+
 #include <boost/filesystem.hpp>
+#include <regex>
+#include <set>
 #include <string>
 
 using namespace orca_cli_test;
@@ -721,4 +725,56 @@ TEST_CASE("orca-cli: object set-filament with --count N stamps every clone",
         REQUIRE(eopt->value == 2);
     }
     REQUIRE(matches == 3);
+}
+
+// 2026-05-21 cross-project audit v2, item 2: identify_id collision regression.
+// Adding one object to each of two freshly-empty plates must produce two
+// distinct identify_ids in Metadata/model_settings.config. Sibling shipped
+// faa5f4dd6 to fix per-plate identify_id allocation; this side never sets
+// loaded_id and relies on libslic3r's global ObjectBase counter -- this test
+// pins that behavior against any future regression.
+TEST_CASE("orca-cli: identify_id stays unique across freshly-empty plates",
+          "[orca-cli][P3][e2e][cross_plate]")
+{
+    if (ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+    auto cube = (stl_dir() / "000_01_test_cube.stl");
+    if (!fs::exists(cube)) { SUCCEED("Skipped"); return; }
+
+    auto tmp = make_temp_dir();
+    auto in  = copy_ref_to_temp(tmp, "cross-plate-id");
+
+    REQUIRE(run_cli({"plate", "add", in.string(), "--name", "A"}).exit_code == 0);
+    REQUIRE(run_cli({"plate", "add", in.string(), "--name", "B"}).exit_code == 0);
+    REQUIRE(run_cli({"object", "add", in.string(),
+                     "--plate", "A",
+                     "--stl",   cube.string(),
+                     "--name",  "objA"}).exit_code == 0);
+    REQUIRE(run_cli({"object", "add", in.string(),
+                     "--plate", "B",
+                     "--stl",   cube.string(),
+                     "--name",  "objB"}).exit_code == 0);
+
+    // Unzip the saved 3mf and scrape every identify_id value from
+    // Metadata/model_settings.config; require all values are distinct.
+    mz_zip_archive zip{};
+    REQUIRE(Slic3r::open_zip_reader(&zip, in.string()));
+    int idx = mz_zip_reader_locate_file(&zip, "Metadata/model_settings.config", nullptr, 0);
+    REQUIRE(idx >= 0);
+    size_t size = 0;
+    void* p = mz_zip_reader_extract_to_heap(&zip, mz_uint(idx), &size, 0);
+    REQUIRE(p != nullptr);
+    std::string contents(reinterpret_cast<const char*>(p), size);
+    mz_free(p);
+    Slic3r::close_zip_reader(&zip);
+
+    // Pull every value="N" that follows key="identify_id".
+    std::regex id_re("key=\"identify_id\"\\s+value=\"(\\d+)\"");
+    std::set<std::string> ids;
+    auto it = std::sregex_iterator(contents.begin(), contents.end(), id_re);
+    auto end = std::sregex_iterator();
+    int total = 0;
+    for (; it != end; ++it) { ids.insert((*it)[1].str()); ++total; }
+    INFO("found " << total << " identify_id entries, " << ids.size() << " distinct");
+    REQUIRE(total > 0);
+    REQUIRE(ids.size() == size_t(total));
 }
