@@ -9,6 +9,8 @@
 
 #include <boost/filesystem.hpp>
 
+#include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
@@ -52,12 +54,15 @@ int do_info_show(const GlobalOpts& g, const std::string& file)
         };
         print_ok(g, "info", data);
     } else {
-        std::fputs(("title:       " + v.title       + "\n").c_str(), stdout);
-        std::fputs(("description: " + v.description + "\n").c_str(), stdout);
-        std::fputs(("license:     " + v.license     + "\n").c_str(), stdout);
-        std::fputs(("copyright:   " + v.copyright   + "\n").c_str(), stdout);
-        std::fputs(("cover:       " + v.cover       + "\n").c_str(), stdout);
-        std::fputs(("origin:      " + v.origin      + "\n").c_str(), stdout);
+        auto show_field = [](const std::string& v) {
+            return v.empty() ? std::string("(empty)") : v;
+        };
+        std::fputs(("title:       " + show_field(v.title)       + "\n").c_str(), stdout);
+        std::fputs(("description: " + show_field(v.description) + "\n").c_str(), stdout);
+        std::fputs(("license:     " + show_field(v.license)     + "\n").c_str(), stdout);
+        std::fputs(("copyright:   " + show_field(v.copyright)   + "\n").c_str(), stdout);
+        std::fputs(("cover:       " + show_field(v.cover)       + "\n").c_str(), stdout);
+        std::fputs(("origin:      " + show_field(v.origin)      + "\n").c_str(), stdout);
         std::fflush(stdout);
     }
     return int(ExitCode::ok);
@@ -91,14 +96,28 @@ int do_info_clear(const GlobalOpts& g, const std::string& file,
 }
 
 // Split a comma-separated string into trimmed tokens. Empty tokens dropped.
+// Trims ASCII whitespace from each token so "title, description" parses the
+// same as "title,description".
 std::vector<std::string> split_csv(const std::string& s) {
+    auto trim = [](std::string t) {
+        auto is_space = [](unsigned char c){ return std::isspace(c); };
+        auto a = std::find_if_not(t.begin(), t.end(), is_space);
+        auto b = std::find_if_not(t.rbegin(), t.rend(), is_space).base();
+        return (a < b) ? std::string(a, b) : std::string();
+    };
     std::vector<std::string> out;
     std::string cur;
     for (char c : s) {
-        if (c == ',') { if (!cur.empty()) out.push_back(cur); cur.clear(); }
-        else cur.push_back(c);
+        if (c == ',') {
+            std::string tok = trim(cur);
+            if (!tok.empty()) out.push_back(std::move(tok));
+            cur.clear();
+        } else {
+            cur.push_back(c);
+        }
     }
-    if (!cur.empty()) out.push_back(cur);
+    std::string tok = trim(cur);
+    if (!tok.empty()) out.push_back(std::move(tok));
     return out;
 }
 
@@ -130,11 +149,14 @@ int do_profile_show(const GlobalOpts& g, const std::string& file)
         };
         print_ok(g, "profile", data);
     } else {
-        std::fputs(("title:       " + v.title       + "\n").c_str(), stdout);
-        std::fputs(("description: " + v.description + "\n").c_str(), stdout);
-        std::fputs(("cover:       " + v.cover       + "\n").c_str(), stdout);
-        std::fputs(("user_id:     " + v.user_id     + "\n").c_str(), stdout);
-        std::fputs(("user_name:   " + v.user_name   + "\n").c_str(), stdout);
+        auto show_field = [](const std::string& s) {
+            return s.empty() ? std::string("(empty)") : s;
+        };
+        std::fputs(("title:       " + show_field(v.title)       + "\n").c_str(), stdout);
+        std::fputs(("description: " + show_field(v.description) + "\n").c_str(), stdout);
+        std::fputs(("cover:       " + show_field(v.cover)       + "\n").c_str(), stdout);
+        std::fputs(("user_id:     " + show_field(v.user_id)     + "\n").c_str(), stdout);
+        std::fputs(("user_name:   " + show_field(v.user_name)   + "\n").c_str(), stdout);
         std::fflush(stdout);
     }
     return int(ExitCode::ok);

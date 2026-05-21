@@ -259,3 +259,44 @@ TEST_CASE("orca-cli: project aux export to non-existent --to parent is exit 4",
     REQUIRE(run_cli({"project","aux","export",in.string(),"--folder","others","--name","x.bin","--to",bad.string()}).exit_code
             == int(orca_cli::ExitCode::bad_config));
 }
+
+TEST_CASE("orca-cli: project info clear --field tolerates whitespace after commas",
+          "[orca-cli][project-tab][e2e]")
+{
+    if (ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+    auto tmp = make_temp_dir();
+    auto in  = copy_ref_to_temp(tmp, "info-clear-ws");
+    REQUIRE(run_cli({"project","info","set",in.string(),
+                     "--title","T","--description","D"}).exit_code == 0);
+    // Whitespace after each comma; split_csv should trim before matching the
+    // whitelist (regression for the trim-the-comment-but-not-the-code bug).
+    auto r = run_cli({"project","info","clear",in.string(),
+                      "--field","title, description"});
+    INFO("stdout: " << r.stdout_ << "\nstderr: " << r.stderr_);
+    REQUIRE(r.exit_code == 0);
+    auto r2 = run_cli({"--json","project","info","show",in.string()});
+    auto j = parse_json_envelope(r2.stdout_);
+    REQUIRE(j["data"]["title"]       == "");
+    REQUIRE(j["data"]["description"] == "");
+}
+
+TEST_CASE("orca-cli: project info show human-readable emits (empty) for unset fields",
+          "[orca-cli][project-tab][e2e]")
+{
+    if (ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+    auto tmp = make_temp_dir();
+    auto in  = copy_ref_to_temp(tmp, "info-show-empty");
+    // Set title to a non-empty value, leave others unset (or already empty).
+    REQUIRE(run_cli({"project","info","set",in.string(),"--title","Only"}).exit_code == 0);
+    REQUIRE(run_cli({"project","info","clear",in.string(),
+                     "--field","description,license,copyright,cover"}).exit_code == 0);
+    auto r = run_cli({"project","info","show",in.string()}); // no --json
+    INFO("stdout: " << r.stdout_);
+    REQUIRE(r.exit_code == 0);
+    // Spec § 2.2: human-readable mode shows "(empty)" for cleared fields.
+    REQUIRE(r.stdout_.find("title:       Only")      != std::string::npos);
+    REQUIRE(r.stdout_.find("description: (empty)")   != std::string::npos);
+    REQUIRE(r.stdout_.find("license:     (empty)")   != std::string::npos);
+    REQUIRE(r.stdout_.find("copyright:   (empty)")   != std::string::npos);
+    REQUIRE(r.stdout_.find("cover:       (empty)")   != std::string::npos);
+}
