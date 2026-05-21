@@ -4,9 +4,35 @@
 
 namespace orca_cli {
 
-const char* folder_flag(AuxFolder)       { throw std::logic_error("not implemented"); }
-const char* folder_json_key(AuxFolder)   { throw std::logic_error("not implemented"); }
-const char* folder_subdir(AuxFolder)     { throw std::logic_error("not implemented"); }
+const char* folder_flag(AuxFolder f) {
+    switch (f) {
+        case AuxFolder::pictures:       return "pictures";
+        case AuxFolder::bom:            return "bom";
+        case AuxFolder::assembly_guide: return "assembly-guide";
+        case AuxFolder::others:         return "others";
+    }
+    throw std::logic_error("unreachable: AuxFolder out of range");
+}
+
+const char* folder_json_key(AuxFolder f) {
+    switch (f) {
+        case AuxFolder::pictures:       return "pictures";
+        case AuxFolder::bom:            return "bom";
+        case AuxFolder::assembly_guide: return "assembly_guide";
+        case AuxFolder::others:         return "others";
+    }
+    throw std::logic_error("unreachable: AuxFolder out of range");
+}
+
+const char* folder_subdir(AuxFolder f) {
+    switch (f) {
+        case AuxFolder::pictures:       return "Model Pictures";
+        case AuxFolder::bom:            return "Bill of Materials";
+        case AuxFolder::assembly_guide: return "Assembly Guide";
+        case AuxFolder::others:         return "Others";
+    }
+    throw std::logic_error("unreachable: AuxFolder out of range");
+}
 
 InfoView info_view(const ProjectState&)                              { throw std::logic_error("not implemented"); }
 bool any_field_set(const InfoSetParams&)                             { throw std::logic_error("not implemented"); }

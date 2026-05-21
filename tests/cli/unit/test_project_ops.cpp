@@ -1,5 +1,6 @@
 #include <catch2/catch_all.hpp>
 #include "project_ops.hpp"
+#include "project_tab_ops.hpp"
 #include "io.hpp"
 #include "output.hpp"
 #include "../test_common.hpp"
@@ -1483,4 +1484,33 @@ TEST_CASE("merge_object_parts: dominant post-split case keeps shared "
     REQUIRE(obj2 != nullptr);
     REQUIRE(obj2->volumes.size() == 1);
     REQUIRE(obj2->volumes[0]->source.input_file == before);
+}
+
+// -- Task 4: folder enum string mappings (spec § 2.1, § 2.3) ------------------
+
+TEST_CASE("orca-cli: folder_flag round-trips all four buckets",
+          "[orca-cli][project-tab][unit]")
+{
+    REQUIRE(std::string(orca_cli::folder_flag(orca_cli::AuxFolder::pictures))       == "pictures");
+    REQUIRE(std::string(orca_cli::folder_flag(orca_cli::AuxFolder::bom))            == "bom");
+    REQUIRE(std::string(orca_cli::folder_flag(orca_cli::AuxFolder::assembly_guide)) == "assembly-guide");
+    REQUIRE(std::string(orca_cli::folder_flag(orca_cli::AuxFolder::others))         == "others");
+}
+
+TEST_CASE("orca-cli: folder_json_key uses underscores (spec § 2.3)",
+          "[orca-cli][project-tab][unit]")
+{
+    REQUIRE(std::string(orca_cli::folder_json_key(orca_cli::AuxFolder::pictures))       == "pictures");
+    REQUIRE(std::string(orca_cli::folder_json_key(orca_cli::AuxFolder::bom))            == "bom");
+    REQUIRE(std::string(orca_cli::folder_json_key(orca_cli::AuxFolder::assembly_guide)) == "assembly_guide");
+    REQUIRE(std::string(orca_cli::folder_json_key(orca_cli::AuxFolder::others))         == "others");
+}
+
+TEST_CASE("orca-cli: folder_subdir matches GUI Auxiliary panel directory names",
+          "[orca-cli][project-tab][unit]")
+{
+    REQUIRE(std::string(orca_cli::folder_subdir(orca_cli::AuxFolder::pictures))       == "Model Pictures");
+    REQUIRE(std::string(orca_cli::folder_subdir(orca_cli::AuxFolder::bom))            == "Bill of Materials");
+    REQUIRE(std::string(orca_cli::folder_subdir(orca_cli::AuxFolder::assembly_guide)) == "Assembly Guide");
+    REQUIRE(std::string(orca_cli::folder_subdir(orca_cli::AuxFolder::others))         == "Others");
 }
