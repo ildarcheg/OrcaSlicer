@@ -137,3 +137,125 @@ TEST_CASE("orca-cli: project info set --output O writes to O and leaves input un
         std::istreambuf_iterator<char>(af), std::istreambuf_iterator<char>{});
     REQUIRE(input_before == input_after);
 }
+
+TEST_CASE("orca-cli: project aux add then list reports under correct bucket",
+          "[orca-cli][project-tab][e2e]")
+{
+    if (ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+    auto cube = stl_dir() / "000_01_test_cube.stl";
+    if (!fs::exists(cube)) { SUCCEED("Skipped"); return; }
+    auto tmp = make_temp_dir();
+    auto in  = copy_ref_to_temp(tmp, "aux-add");
+
+    REQUIRE(run_cli({"project", "aux", "add", in.string(),
+                     "--folder", "others",
+                     "--file",   cube.string(),
+                     "--name",   "sample.stl"}).exit_code == 0);
+
+    auto r = run_cli({"--json", "project", "aux", "list", in.string()});
+    INFO("list stdout: " << r.stdout_);
+    REQUIRE(r.exit_code == 0);
+    auto j = parse_json_envelope(r.stdout_);
+    // Stable shape: every bucket key present (spec § 2.2)
+    REQUIRE(j["data"].contains("pictures"));
+    REQUIRE(j["data"].contains("bom"));
+    REQUIRE(j["data"].contains("assembly_guide"));  // underscore — spec § 2.3
+    REQUIRE(j["data"].contains("others"));
+    bool saw = false;
+    for (const auto& e : j["data"]["others"])
+        if (e["name"] == "sample.stl") saw = true;
+    REQUIRE(saw);
+}
+
+TEST_CASE("orca-cli: project aux add --folder uses hyphen (assembly-guide)",
+          "[orca-cli][project-tab][e2e]")
+{
+    if (ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+    auto cube = stl_dir() / "000_01_test_cube.stl";
+    if (!fs::exists(cube)) { SUCCEED("Skipped"); return; }
+    auto tmp = make_temp_dir();
+    auto in  = copy_ref_to_temp(tmp, "aux-assembly");
+
+    REQUIRE(run_cli({"project", "aux", "add", in.string(),
+                     "--folder", "assembly-guide",   // hyphen on flag
+                     "--file",   cube.string(),
+                     "--name",   "instructions.bin"}).exit_code == 0);
+
+    auto r = run_cli({"--json", "project", "aux", "list", in.string()});
+    auto j = parse_json_envelope(r.stdout_);
+    bool saw = false;
+    for (const auto& e : j["data"]["assembly_guide"])    // underscore in JSON
+        if (e["name"] == "instructions.bin") saw = true;
+    REQUIRE(saw);
+}
+
+TEST_CASE("orca-cli: project aux add collision is exit 5; --force is exit 0",
+          "[orca-cli][project-tab][e2e]")
+{
+    if (ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+    auto cube = stl_dir() / "000_01_test_cube.stl";
+    if (!fs::exists(cube)) { SUCCEED("Skipped"); return; }
+    auto tmp = make_temp_dir();
+    auto in  = copy_ref_to_temp(tmp, "aux-collide");
+    REQUIRE(run_cli({"project","aux","add",in.string(),"--folder","others","--file",cube.string(),"--name","x.bin"}).exit_code == 0);
+    REQUIRE(run_cli({"project","aux","add",in.string(),"--folder","others","--file",cube.string(),"--name","x.bin"}).exit_code
+            == int(orca_cli::ExitCode::duplicate_name));
+    REQUIRE(run_cli({"project","aux","add",in.string(),"--folder","others","--file",cube.string(),"--name","x.bin","--force"}).exit_code == 0);
+}
+
+TEST_CASE("orca-cli: project aux add --name CON.png is exit 4 (bad_config)",
+          "[orca-cli][project-tab][e2e]")
+{
+    if (ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+    auto cube = stl_dir() / "000_01_test_cube.stl";
+    if (!fs::exists(cube)) { SUCCEED("Skipped"); return; }
+    auto tmp = make_temp_dir();
+    auto in  = copy_ref_to_temp(tmp, "aux-cn");
+    auto r = run_cli({"project","aux","add",in.string(),"--folder","others","--file",cube.string(),"--name","CON.png"});
+    INFO("stdout: " << r.stdout_ << "\nstderr: " << r.stderr_);
+    REQUIRE(r.exit_code == int(orca_cli::ExitCode::bad_config));
+}
+
+TEST_CASE("orca-cli: project aux remove missing-name is exit 6",
+          "[orca-cli][project-tab][e2e]")
+{
+    if (ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+    auto tmp = make_temp_dir();
+    auto in  = copy_ref_to_temp(tmp, "aux-rm-missing");
+    auto r = run_cli({"project","aux","remove",in.string(),"--folder","pictures","--name","never_there.png"});
+    REQUIRE(r.exit_code == int(orca_cli::ExitCode::unknown_reference));
+}
+
+TEST_CASE("orca-cli: project aux export to file and to directory destinations",
+          "[orca-cli][project-tab][e2e]")
+{
+    if (ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+    auto cube = stl_dir() / "000_01_test_cube.stl";
+    if (!fs::exists(cube)) { SUCCEED("Skipped"); return; }
+    auto tmp = make_temp_dir();
+    auto in  = copy_ref_to_temp(tmp, "aux-export");
+    REQUIRE(run_cli({"project","aux","add",in.string(),"--folder","others","--file",cube.string(),"--name","x.bin"}).exit_code == 0);
+
+    auto out_dir = make_temp_dir();
+    auto file_dst = out_dir / "renamed.bin";
+    REQUIRE(run_cli({"project","aux","export",in.string(),"--folder","others","--name","x.bin","--to",file_dst.string()}).exit_code == 0);
+    REQUIRE(fs::exists(file_dst));
+
+    auto dir_dst = make_temp_dir();
+    REQUIRE(run_cli({"project","aux","export",in.string(),"--folder","others","--name","x.bin","--to",dir_dst.string()}).exit_code == 0);
+    REQUIRE(fs::exists(dir_dst / "x.bin"));
+}
+
+TEST_CASE("orca-cli: project aux export to non-existent --to parent is exit 4",
+          "[orca-cli][project-tab][e2e]")
+{
+    if (ref_3mf().empty()) { SUCCEED("Skipped"); return; }
+    auto cube = stl_dir() / "000_01_test_cube.stl";
+    if (!fs::exists(cube)) { SUCCEED("Skipped"); return; }
+    auto tmp = make_temp_dir();
+    auto in  = copy_ref_to_temp(tmp, "aux-export-bad");
+    REQUIRE(run_cli({"project","aux","add",in.string(),"--folder","others","--file",cube.string(),"--name","x.bin"}).exit_code == 0);
+    auto bad = make_temp_dir() / "no_such_dir" / "out.bin";
+    REQUIRE(run_cli({"project","aux","export",in.string(),"--folder","others","--name","x.bin","--to",bad.string()}).exit_code
+            == int(orca_cli::ExitCode::bad_config));
+}

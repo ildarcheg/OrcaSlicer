@@ -369,7 +369,7 @@ ProjectState load_project(const std::string& path)
         &is_orca_3mf,
         &file_version,
         /*proFn*/ nullptr,
-        LoadStrategy::LoadModel | LoadStrategy::LoadConfig);
+        LoadStrategy::LoadModel | LoadStrategy::LoadConfig | LoadStrategy::LoadAuxiliary);
 
     if (!ok) {
         // load_bbs_3mf may have populated plate_data partially; release any
