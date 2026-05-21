@@ -444,3 +444,16 @@ contract against OrcaSlicer's constant. Test count moved from 123 to
   (2026-05-20). Merged `multipart_combo` appears in `multipart_1`'s
   slot with filament 1; remaining parts unchanged; geometry matches
   the pre-merge silhouette (no `modify_to_center_geometry` shift).
+
+## Phase 10 — Project tab editing (info / profile / aux)
+
+**Status:** complete, NOT pushed.
+
+**Verbs shipped:**
+- `project info  {show,set,clear}` — title, description, license, copyright, cover (PNG-only)
+- `project profile {show,set,clear}` — title, description, cover; user_id / user_name read-only
+- `project aux {list,add,remove,export}` — pictures / bom / assembly-guide / others buckets
+
+**Tests:** +40 cases (24 unit + 13 e2e + 3 roundtrip).
+**Spec:** `docs/superpowers/specs/2026-05-20-orca-cli-project-tab-design.md`.
+**Plan:** `docs/superpowers/plans/2026-05-20-orca-cli-project-tab.md`.
