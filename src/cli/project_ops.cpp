@@ -191,11 +191,11 @@ void add_object(ProjectState& s, const AddObjectParams& p)
     // P5: validate --filament slot ONCE up front so a bad slot rejects before
     // any state change. The validation only inspects project_config; it does
     // not touch the model, so it is safe to call this early. The actual
-    // per-object write happens inside each branch's loop (see below). Plan
-    // Task 7 will make set_object_filament group-by-name; once it lands, the
-    // trailing call form can replace these inline writes, but for now we
-    // stamp each ModelObject individually so --count N --filament K does NOT
-    // leave N-1 clones with the default extruder.
+    // per-object write happens inside each branch's loop (see below) so every
+    // ModelObject in a --count N cluster receives the extruder atomically with
+    // its placement -- set_object_filament is now group-by-name and would also
+    // do the right thing if called once at the end, but stamping inline keeps
+    // add_object self-contained.
     if (p.filament_slot.has_value()) {
         int slot_count = 0;
         if (s.project_config) {
