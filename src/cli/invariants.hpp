@@ -52,14 +52,14 @@ void run_all_invariants(const ProjectState& in_memory,
 
 // Standalone variant of check #2 (verify_plate_thumbnails) tuned for the
 // `project init` input-template sanity check (cross-project audit P2).
-// Throws InvariantViolation with a user-facing message pointing at the
-// input template; the CLI command layer maps to ExitCode::invariant_violation
+// `zip_path` is the file to inspect; `display_path` is what appears in
+// user-facing error messages (the staging copy is an implementation
+// detail; the user knows their --template argument). Throws
+// InvariantViolation on either open failure or missing plate small-
+// thumbnail; the CLI command layer maps to ExitCode::invariant_violation
 // (exit 8) via the existing InvariantViolation catch in do_project_init.
-//
-// Without this, a broken input template with a missing plate small-thumbnail
-// would be silently auto-fixed by save_project's placeholder PNG passthrough
-// and the user would never learn the template was bad.
-void verify_input_template_thumbnails(const std::string& zip_path);
+void verify_input_template_thumbnails(const std::string& zip_path,
+                                      const std::string& display_path);
 
 // Lightweight central-directory enumeration: opens the zip, walks entry
 // names, closes. Does NOT decompress entry bodies. Returns empty vector

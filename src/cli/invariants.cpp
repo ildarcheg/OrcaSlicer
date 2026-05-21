@@ -287,14 +287,17 @@ void run_all_invariants(const ProjectState& in_memory,
     verify_vector_config_roundtrip(in_memory, zip_path);
 }
 
-void verify_input_template_thumbnails(const std::string& zip_path)
+void verify_input_template_thumbnails(const std::string& zip_path,
+                                      const std::string& display_path)
 {
     auto entry_names = enumerate_zip_entry_names(zip_path);
-    if (entry_names.empty())
+    if (entry_names.empty()) {
+        // Open failure (locked / renamed / genuinely corrupt). The right
+        // remediation is "check the path", NOT "regenerate in the GUI" --
+        // do not lead with the latter.
         throw InvariantViolation(
-            "input template has missing plate thumbnail(s); regenerate "
-            "the template in OrcaSlicer GUI. (cannot open archive: " +
-            zip_path + ")");
+            "cannot open input template: " + display_path);
+    }
 
     std::vector<ZipEntry> name_entries;
     name_entries.reserve(entry_names.size());
@@ -304,6 +307,7 @@ void verify_input_template_thumbnails(const std::string& zip_path)
     try {
         verify_plate_thumbnails(name_entries);
     } catch (const InvariantViolation& e) {
+        // Real thumbnail damage. The remediation IS "regenerate in the GUI".
         throw InvariantViolation(
             "input template has missing plate thumbnail(s); regenerate "
             "the template in OrcaSlicer GUI. (" + std::string(e.what()) + ")");

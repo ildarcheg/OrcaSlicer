@@ -47,8 +47,11 @@ int do_project_init(const GlobalOpts&   g,
         // Cross-project audit P2: surface a broken input template at init
         // time instead of letting save_project's placeholder passthrough
         // silently auto-fix it. The user MUST know the template was bad
-        // so they can regenerate it in OrcaSlicer GUI.
-        verify_input_template_thumbnails(tmpl);
+        // so they can regenerate it in OrcaSlicer GUI. We validate the
+        // staging copy (the bytes load_project actually saw, avoiding a
+        // TOCTOU swap on the original) but report against the user-
+        // supplied path in any error message.
+        verify_input_template_thumbnails(tmp.string(), tmpl);
 
         save_project(state, out);
 
