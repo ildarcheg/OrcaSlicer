@@ -121,6 +121,13 @@ namespace {
 constexpr const char* kCoverPath   = "Auxiliaries/.thumbnails/thumbnail_3mf.png";
 constexpr const char* kCoverSubdir = ".thumbnails";
 constexpr const char* kCoverName   = "thumbnail_3mf.png";
+
+bool info_cover_empty(const ProjectState& s) {
+    return !s.model->model_info || s.model->model_info->cover_file.empty();
+}
+bool profile_cover_empty(const ProjectState& s) {
+    return !s.model->profile_info || s.model->profile_info->ProfileCover.empty();
+}
 } // namespace
 
 bool is_png(const boost::filesystem::path& p) {
@@ -184,7 +191,21 @@ void embed_cover_image(ProjectState&                  s,
     }
 }
 
-void clear_cover_image(ProjectState&, CoverTarget)                   { throw std::logic_error("not implemented"); }
+void clear_cover_image(ProjectState& s, CoverTarget target) {
+    if (target == CoverTarget::Info) {
+        if (s.model->model_info) s.model->model_info->cover_file.clear();
+    } else {
+        if (s.model->profile_info) s.model->profile_info->ProfileCover.clear();
+    }
+
+    // Refcount: only delete the canonical file when BOTH surfaces are empty.
+    if (!info_cover_empty(s) || !profile_cover_empty(s)) return;
+
+    auto aux = boost::filesystem::path(s.model->get_auxiliary_file_temp_path());
+    auto landed = aux / kCoverSubdir / kCoverName;
+    boost::system::error_code ec;
+    boost::filesystem::remove(landed, ec);  // best-effort; absent file -> no-op
+}
 
 std::string sanitize_aux_name(const std::string&)                    { throw std::logic_error("not implemented"); }
 

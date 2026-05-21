@@ -341,3 +341,83 @@ TEST_CASE("orca-cli: info_set --cover routes through embed_cover_image",
     REQUIRE(s.model->model_info->cover_file
             == "Auxiliaries/.thumbnails/thumbnail_3mf.png");
 }
+
+TEST_CASE("orca-cli: clear_cover_image — only-info clear deletes the file",
+          "[orca-cli][project-tab][unit]")
+{
+    auto tmp = orca_cli_test::make_temp_dir();
+    auto src = tmp / "c.png"; write_tiny_png(src);
+    auto s = make_empty_state();
+    embed_cover_image(s, src, CoverTarget::Info);
+    auto landed = boost::filesystem::path(s.model->get_auxiliary_file_temp_path())
+                  / ".thumbnails" / "thumbnail_3mf.png";
+    REQUIRE(boost::filesystem::exists(landed));
+
+    clear_cover_image(s, CoverTarget::Info);
+    REQUIRE(s.model->model_info->cover_file.empty());
+    REQUIRE_FALSE(boost::filesystem::exists(landed));
+}
+
+TEST_CASE("orca-cli: clear_cover_image — only-profile clear deletes the file",
+          "[orca-cli][project-tab][unit]")
+{
+    auto tmp = orca_cli_test::make_temp_dir();
+    auto src = tmp / "c.png"; write_tiny_png(src);
+    auto s = make_empty_state();
+    embed_cover_image(s, src, CoverTarget::Profile);
+    auto landed = boost::filesystem::path(s.model->get_auxiliary_file_temp_path())
+                  / ".thumbnails" / "thumbnail_3mf.png";
+    REQUIRE(boost::filesystem::exists(landed));
+
+    clear_cover_image(s, CoverTarget::Profile);
+    REQUIRE(s.model->profile_info->ProfileCover.empty());
+    REQUIRE_FALSE(boost::filesystem::exists(landed));
+}
+
+TEST_CASE("orca-cli: clear_cover_image — both-set clear-info keeps file (profile still owns)",
+          "[orca-cli][project-tab][unit]")
+{
+    auto tmp = orca_cli_test::make_temp_dir();
+    auto src = tmp / "c.png"; write_tiny_png(src);
+    auto s = make_empty_state();
+    embed_cover_image(s, src, CoverTarget::Info);
+    embed_cover_image(s, src, CoverTarget::Profile);
+    auto landed = boost::filesystem::path(s.model->get_auxiliary_file_temp_path())
+                  / ".thumbnails" / "thumbnail_3mf.png";
+    REQUIRE(boost::filesystem::exists(landed));
+
+    clear_cover_image(s, CoverTarget::Info);
+    REQUIRE(s.model->model_info->cover_file.empty());
+    REQUIRE(s.model->profile_info->ProfileCover
+            == "Auxiliaries/.thumbnails/thumbnail_3mf.png");
+    REQUIRE(boost::filesystem::exists(landed));  // kept!
+}
+
+TEST_CASE("orca-cli: clear_cover_image — both-set sequential clears delete on second",
+          "[orca-cli][project-tab][unit]")
+{
+    auto tmp = orca_cli_test::make_temp_dir();
+    auto src = tmp / "c.png"; write_tiny_png(src);
+    auto s = make_empty_state();
+    embed_cover_image(s, src, CoverTarget::Info);
+    embed_cover_image(s, src, CoverTarget::Profile);
+    auto landed = boost::filesystem::path(s.model->get_auxiliary_file_temp_path())
+                  / ".thumbnails" / "thumbnail_3mf.png";
+
+    clear_cover_image(s, CoverTarget::Info);
+    REQUIRE(boost::filesystem::exists(landed));  // profile still owns
+
+    clear_cover_image(s, CoverTarget::Profile);
+    REQUIRE(s.model->profile_info->ProfileCover.empty());
+    REQUIRE_FALSE(boost::filesystem::exists(landed));
+}
+
+TEST_CASE("orca-cli: clear_cover_image is idempotent (no-op on already-empty)",
+          "[orca-cli][project-tab][unit]")
+{
+    auto s = make_empty_state();
+    REQUIRE_NOTHROW(clear_cover_image(s, CoverTarget::Info));
+    REQUIRE_NOTHROW(clear_cover_image(s, CoverTarget::Profile));
+    // info_clear --field cover when model_info is nullptr also OK:
+    REQUIRE_NOTHROW(info_clear(s, {"cover"}));
+}
