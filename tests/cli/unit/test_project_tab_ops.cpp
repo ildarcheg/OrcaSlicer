@@ -682,3 +682,76 @@ TEST_CASE("orca-cli: aux_remove throws out_of_range on missing entry",
     REQUIRE_THROWS_AS(aux_remove(s, AuxFolder::pictures, "missing.png"),
                       std::out_of_range);
 }
+
+TEST_CASE("orca-cli: aux_export writes to a file path destination",
+          "[orca-cli][project-tab][unit]")
+{
+    auto tmp = orca_cli_test::make_temp_dir();
+    auto src = tmp / "x.png"; auto src_bytes = read_all(src); write_tiny_png(src);
+    src_bytes = read_all(src);
+    auto s = make_empty_state();
+    AuxAddParams p; p.folder = AuxFolder::pictures; p.file = src;
+    aux_add(s, p);
+
+    auto out_dir = orca_cli_test::make_temp_dir();
+    auto dst = out_dir / "exported.png";
+    aux_export(s, AuxFolder::pictures, "x.png", dst);
+    REQUIRE(boost::filesystem::exists(dst));
+    REQUIRE(read_all(dst) == src_bytes);
+}
+
+TEST_CASE("orca-cli: aux_export writes into an existing directory destination",
+          "[orca-cli][project-tab][unit]")
+{
+    auto tmp = orca_cli_test::make_temp_dir();
+    auto src = tmp / "x.png"; write_tiny_png(src);
+    auto src_bytes = read_all(src);
+    auto s = make_empty_state();
+    AuxAddParams p; p.folder = AuxFolder::pictures; p.file = src;
+    aux_add(s, p);
+
+    auto out_dir = orca_cli_test::make_temp_dir();  // existing dir
+    aux_export(s, AuxFolder::pictures, "x.png", out_dir);
+    auto landed = out_dir / "x.png";
+    REQUIRE(boost::filesystem::exists(landed));
+    REQUIRE(read_all(landed) == src_bytes);
+}
+
+TEST_CASE("orca-cli: aux_export rejects non-existent --to parent dir",
+          "[orca-cli][project-tab][unit]")
+{
+    auto tmp = orca_cli_test::make_temp_dir();
+    auto src = tmp / "x.png"; write_tiny_png(src);
+    auto s = make_empty_state();
+    AuxAddParams p; p.folder = AuxFolder::pictures; p.file = src;
+    aux_add(s, p);
+
+    auto bad = orca_cli_test::make_temp_dir() / "does_not_exist_dir" / "out.png";
+    REQUIRE_THROWS_AS(aux_export(s, AuxFolder::pictures, "x.png", bad),
+                      std::invalid_argument);
+}
+
+TEST_CASE("orca-cli: aux_export missing entry throws std::out_of_range",
+          "[orca-cli][project-tab][unit]")
+{
+    auto s = make_empty_state();
+    auto dst = orca_cli_test::make_temp_dir() / "out.png";
+    REQUIRE_THROWS_AS(aux_export(s, AuxFolder::pictures, "missing.png", dst),
+                      std::out_of_range);
+}
+
+TEST_CASE("orca-cli: aux_export overwrites existing destination without prompting",
+          "[orca-cli][project-tab][unit]")
+{
+    auto tmp = orca_cli_test::make_temp_dir();
+    auto src = tmp / "x.png"; write_tiny_png(src);
+    auto s = make_empty_state();
+    AuxAddParams p; p.folder = AuxFolder::pictures; p.file = src;
+    aux_add(s, p);
+
+    auto dst = orca_cli_test::make_temp_dir() / "out.png";
+    std::ofstream(dst.string(), std::ios::binary).write("OLD", 3);
+    REQUIRE(boost::filesystem::exists(dst));
+    aux_export(s, AuxFolder::pictures, "x.png", dst);
+    REQUIRE(read_all(dst) == read_all(src));  // overwritten
+}

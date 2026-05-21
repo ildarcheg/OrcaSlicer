@@ -216,8 +216,32 @@ void aux_remove(ProjectState& s, AuxFolder folder, const std::string& name) {
     boost::filesystem::remove(path, ec);
     if (ec) throw std::runtime_error("failed to remove aux entry: " + ec.message());
 }
-void aux_export(const ProjectState&, AuxFolder, const std::string&,
-                const boost::filesystem::path&)                      { throw std::logic_error("not implemented"); }
+void aux_export(const ProjectState&            s,
+                AuxFolder                      folder,
+                const std::string&             name,
+                const boost::filesystem::path& to)
+{
+    boost::system::error_code ec;
+    auto aux_root = boost::filesystem::path(s.model->get_auxiliary_file_temp_path());
+    auto src = aux_root / folder_subdir(folder) / name;
+    if (!boost::filesystem::is_regular_file(src, ec))
+        throw std::out_of_range("aux entry not found: "
+            + std::string(folder_flag(folder)) + "/" + name);
+
+    // Resolve destination: if `to` is an existing directory, write to to/name.
+    boost::filesystem::path dst = to;
+    if (boost::filesystem::is_directory(to, ec))
+        dst = to / name;
+
+    auto parent = dst.parent_path();
+    if (!parent.empty() && !boost::filesystem::is_directory(parent, ec))
+        throw std::invalid_argument("--to parent dir does not exist: "
+                                    + parent.string());
+
+    boost::filesystem::copy_file(src, dst,
+        boost::filesystem::copy_options::overwrite_existing, ec);
+    if (ec) throw std::runtime_error("failed to export aux file: " + ec.message());
+}
 
 namespace {
 constexpr const char* kCoverPath   = "Auxiliaries/.thumbnails/thumbnail_3mf.png";
