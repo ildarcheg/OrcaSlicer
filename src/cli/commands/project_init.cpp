@@ -1,4 +1,5 @@
 #include "project_init.hpp"
+#include "project_tab.hpp"
 
 #include "../cli11/CLI11.hpp"
 #include "../output.hpp"
@@ -74,10 +75,9 @@ int do_project_init(const GlobalOpts&   g,
 
 } // namespace
 
-void register_project_subcmd(CLI::App& app, GlobalOpts& g)
+void install_project_init_subcmd(CLI::App& project, GlobalOpts& g)
 {
-    auto* project = app.add_subcommand("project", "project-level operations");
-    auto* init    = project->add_subcommand(
+    auto* init = project.add_subcommand(
         "init", "clone a reference 3mf into a new project");
 
     // CLI11 binds options to long-lived storage by reference. statics keep
@@ -94,6 +94,15 @@ void register_project_subcmd(CLI::App& app, GlobalOpts& g)
     init->callback([&g]() {
         std::exit(do_project_init(g, out, tmpl));
     });
+}
+
+void register_project_subcmd(CLI::App& app, GlobalOpts& g)
+{
+    auto* project = app.add_subcommand("project", "project-level operations");
+    install_project_init_subcmd   (*project, g);
+    install_project_info_subcmd   (*project, g);
+    install_project_profile_subcmd(*project, g);
+    install_project_aux_subcmd    (*project, g);
 }
 
 } // namespace orca_cli::commands

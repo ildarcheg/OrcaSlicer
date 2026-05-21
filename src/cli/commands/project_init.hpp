@@ -5,12 +5,17 @@ namespace CLI { class App; }
 
 namespace orca_cli::commands {
 
-// Register the `project` subcommand tree on the given CLI11 app.
-// In Phase 1 this registers a single leaf command:
-//   orca-cli project init <out> --template <ref>
-// which clones the reference 3mf via the standard load_project /
-// save_project flow (so the invariant guard runs end-to-end on the
-// produced archive).
-void register_project_subcmd(CLI::App& app, GlobalOpts& gopts);
+// Creates the `project` parent subcommand and installs all subverb families.
+// Called once from main.cpp.
+void register_project_subcmd(CLI::App& app, GlobalOpts& g);
+
+// Installs ONE subverb family under an existing `project` parent. Each leaf
+// installer is responsible for its own subverb registrations + callbacks.
+// Used internally by register_project_subcmd; exposed here so project_tab.cpp
+// can be a separate translation unit.
+void install_project_init_subcmd   (CLI::App& project, GlobalOpts& g);
+void install_project_info_subcmd   (CLI::App& project, GlobalOpts& g);
+void install_project_profile_subcmd(CLI::App& project, GlobalOpts& g);
+void install_project_aux_subcmd    (CLI::App& project, GlobalOpts& g);
 
 } // namespace orca_cli::commands

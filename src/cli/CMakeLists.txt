@@ -16,6 +16,7 @@ add_library(orca_cli_core STATIC
     png_placeholder.cpp
     placement.cpp
     commands/project_init.cpp
+    commands/project_tab.cpp
     commands/plate.cpp
     commands/object.cpp
     commands/object_parse_vec3.cpp
