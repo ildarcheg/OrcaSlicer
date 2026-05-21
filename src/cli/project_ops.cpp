@@ -595,26 +595,42 @@ void remove_object(ProjectState& s, const std::string& object_name)
 {
     using namespace Slic3r;
 
-    auto it = std::find_if(s.model->objects.begin(), s.model->objects.end(),
-        [&](ModelObject* o) { return o->name == object_name; });
-    if (it == s.model->objects.end())
+    // Collect all matching object indices. --count N produces N independent
+    // ModelObjects sharing one name; remove must take them all (group-by-name).
+    std::vector<int> matched_idx;
+    for (size_t i = 0; i < s.model->objects.size(); ++i) {
+        if (s.model->objects[i]->name == object_name)
+            matched_idx.push_back(int(i));
+    }
+    if (matched_idx.empty())
         throw std::out_of_range("object not found: " + object_name);
 
-    const int removed_idx = int(it - s.model->objects.begin());
-    s.model->delete_object(size_t(removed_idx));
+    // Delete from highest index down so lower indices stay valid mid-loop.
+    std::sort(matched_idx.begin(), matched_idx.end(), std::greater<int>());
+    for (int idx : matched_idx)
+        s.model->delete_object(size_t(idx));
 
     // Rebuild every plate's objects_and_instances:
-    //   - drop entries pointing at the removed object,
-    //   - shift indices > removed_idx down by 1 so they continue to
-    //     refer to the same ModelObject after the erase.
+    //   - drop entries pointing at any removed object,
+    //   - shift indices > each removed_idx down by 1 per removal below them.
+    // matched_idx is in descending order; convert to a sorted-asc set for the
+    // shift count lookup.
+    std::vector<int> removed_asc(matched_idx);
+    std::sort(removed_asc.begin(), removed_asc.end());
+    const std::set<int> removed_set(removed_asc.begin(), removed_asc.end());
+
     for (auto& pd : s.plates) {
         std::vector<std::pair<int, int>> kept;
         kept.reserve(pd->objects_and_instances.size());
         for (const auto& kv : pd->objects_and_instances) {
             const int oi = kv.first;
             const int ii = kv.second;
-            if (oi == removed_idx) continue;
-            kept.emplace_back(oi > removed_idx ? oi - 1 : oi, ii);
+            if (removed_set.count(oi)) continue;
+            // Number of removed indices strictly less than oi.
+            int shift = int(std::lower_bound(removed_asc.begin(),
+                                             removed_asc.end(), oi)
+                            - removed_asc.begin());
+            kept.emplace_back(oi - shift, ii);
         }
         pd->objects_and_instances.swap(kept);
     }
