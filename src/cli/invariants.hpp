@@ -50,6 +50,17 @@ void verify_vector_config_roundtrip(const ProjectState& in_memory,
 void run_all_invariants(const ProjectState& in_memory,
                         const std::string&  zip_path);
 
+// Standalone variant of check #2 (verify_plate_thumbnails) tuned for the
+// `project init` input-template sanity check (cross-project audit P2).
+// Throws InvariantViolation with a user-facing message pointing at the
+// input template; the CLI command layer maps to ExitCode::invariant_violation
+// (exit 8) via the existing InvariantViolation catch in do_project_init.
+//
+// Without this, a broken input template with a missing plate small-thumbnail
+// would be silently auto-fixed by save_project's placeholder PNG passthrough
+// and the user would never learn the template was bad.
+void verify_input_template_thumbnails(const std::string& zip_path);
+
 // Lightweight central-directory enumeration: opens the zip, walks entry
 // names, closes. Does NOT decompress entry bodies. Returns empty vector
 // on open failure.

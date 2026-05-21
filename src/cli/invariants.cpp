@@ -287,4 +287,27 @@ void run_all_invariants(const ProjectState& in_memory,
     verify_vector_config_roundtrip(in_memory, zip_path);
 }
 
+void verify_input_template_thumbnails(const std::string& zip_path)
+{
+    auto entry_names = enumerate_zip_entry_names(zip_path);
+    if (entry_names.empty())
+        throw InvariantViolation(
+            "input template has missing plate thumbnail(s); regenerate "
+            "the template in OrcaSlicer GUI. (cannot open archive: " +
+            zip_path + ")");
+
+    std::vector<ZipEntry> name_entries;
+    name_entries.reserve(entry_names.size());
+    for (auto& n : entry_names)
+        name_entries.push_back(ZipEntry{ std::move(n), {} });
+
+    try {
+        verify_plate_thumbnails(name_entries);
+    } catch (const InvariantViolation& e) {
+        throw InvariantViolation(
+            "input template has missing plate thumbnail(s); regenerate "
+            "the template in OrcaSlicer GUI. (" + std::string(e.what()) + ")");
+    }
+}
+
 } // namespace orca_cli

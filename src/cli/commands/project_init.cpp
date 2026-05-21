@@ -43,6 +43,13 @@ int do_project_init(const GlobalOpts&   g,
         fs::copy_file(tmpl, tmp, fs::copy_options::overwrite_existing);
 
         auto state = load_project(tmp.string());
+
+        // Cross-project audit P2: surface a broken input template at init
+        // time instead of letting save_project's placeholder passthrough
+        // silently auto-fix it. The user MUST know the template was bad
+        // so they can regenerate it in OrcaSlicer GUI.
+        verify_input_template_thumbnails(tmpl);
+
         save_project(state, out);
 
         fs::remove(tmp, ec);  // best-effort cleanup
