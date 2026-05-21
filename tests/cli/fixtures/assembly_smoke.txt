@@ -1,0 +1,12 @@
+ORCA-CLI PHASE 10 SMOKE FIXTURE
+================================
+
+This file exists to be attached to a .3mf via
+'orca-cli project aux add --folder assembly-guide --file ...'
+during the Phase 10 manual smoke recipe and the
+[orca-cli][project-tab][e2e] suite.
+
+It is not a real assembly guide. The byte content is irrelevant
+to the test (the aux pipeline only copies bytes); the file is
+plain UTF-8 text so it renders in any tool and never trips a
+file-type validator.
