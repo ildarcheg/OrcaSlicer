@@ -105,11 +105,57 @@ void info_clear(ProjectState& s, const std::vector<std::string>& fields) {
     }
 }
 
-ProfileView profile_view(const ProjectState&)                        { throw std::logic_error("not implemented"); }
-bool any_field_set(const ProfileSetParams&)                          { throw std::logic_error("not implemented"); }
-void profile_set(ProjectState&, const ProfileSetParams&)             { throw std::logic_error("not implemented"); }
-const std::vector<std::string>& allowed_profile_fields()             { throw std::logic_error("not implemented"); }
-void profile_clear(ProjectState&, const std::vector<std::string>&)   { throw std::logic_error("not implemented"); }
+ProfileView profile_view(const ProjectState& s) {
+    ProfileView v;
+    if (!s.model || !s.model->profile_info) return v;
+    const auto& p = *s.model->profile_info;
+    v.title       = p.ProfileTile;          // sic — intentional typo in ModelProfileInfo
+    v.description = p.ProfileDescription;
+    v.cover       = p.ProfileCover;
+    v.user_id     = p.ProfileUserId;
+    v.user_name   = p.ProfileUserName;
+    return v;
+}
+
+bool any_field_set(const ProfileSetParams& p) {
+    return p.title.has_value() || p.description.has_value() || p.cover.has_value();
+}
+
+void profile_set(ProjectState& s, const ProfileSetParams& p) {
+    if (!s.model->profile_info)
+        s.model->profile_info = std::make_shared<Slic3r::ModelProfileInfo>();
+    auto& pi = *s.model->profile_info;
+    if (p.title)       pi.ProfileTile        = *p.title;
+    if (p.description) pi.ProfileDescription = *p.description;
+    if (p.cover)       embed_cover_image(s, *p.cover, CoverTarget::Profile);
+}
+
+const std::vector<std::string>& allowed_profile_fields() {
+    static const std::vector<std::string> v{"title", "description", "cover"};
+    return v;
+}
+
+void profile_clear(ProjectState& s, const std::vector<std::string>& fields) {
+    const auto& allowed = allowed_profile_fields();
+    for (const auto& f : fields) {
+        if (std::find(allowed.begin(), allowed.end(), f) == allowed.end()) {
+            std::string msg = "unknown field: '" + f + "'. Allowed:";
+            for (const auto& a : allowed) msg += " " + a;
+            throw InvalidField(msg);
+        }
+    }
+    if (!s.model->profile_info) {
+        for (const auto& f : fields)
+            if (f == "cover") clear_cover_image(s, CoverTarget::Profile);
+        return;
+    }
+    auto& pi = *s.model->profile_info;
+    for (const auto& f : fields) {
+        if      (f == "title")       pi.ProfileTile.clear();
+        else if (f == "description") pi.ProfileDescription.clear();
+        else if (f == "cover")       clear_cover_image(s, CoverTarget::Profile);
+    }
+}
 
 std::vector<AuxEntry> aux_list(const ProjectState&)                  { throw std::logic_error("not implemented"); }
 void aux_add(ProjectState&, const AuxAddParams&)                     { throw std::logic_error("not implemented"); }

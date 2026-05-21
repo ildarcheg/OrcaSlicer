@@ -421,3 +421,63 @@ TEST_CASE("orca-cli: clear_cover_image is idempotent (no-op on already-empty)",
     // info_clear --field cover when model_info is nullptr also OK:
     REQUIRE_NOTHROW(info_clear(s, {"cover"}));
 }
+
+TEST_CASE("orca-cli: profile_view on empty model returns five empty strings",
+          "[orca-cli][project-tab][unit]")
+{
+    auto s = make_empty_state();
+    auto v = profile_view(s);
+    REQUIRE(v.title.empty());
+    REQUIRE(v.description.empty());
+    REQUIRE(v.cover.empty());
+    REQUIRE(v.user_id.empty());
+    REQUIRE(v.user_name.empty());
+}
+
+TEST_CASE("orca-cli: profile_view surfaces user_id and user_name (read-only)",
+          "[orca-cli][project-tab][unit]")
+{
+    auto s = make_empty_state();
+    s.model->profile_info = std::make_shared<Slic3r::ModelProfileInfo>();
+    s.model->profile_info->ProfileTile        = "T";
+    s.model->profile_info->ProfileDescription = "D";
+    s.model->profile_info->ProfileCover       = "Auxiliaries/.thumbnails/thumbnail_3mf.png";
+    s.model->profile_info->ProfileUserId      = "id-42";
+    s.model->profile_info->ProfileUserName    = "alice";
+    auto v = profile_view(s);
+    REQUIRE(v.title       == "T");
+    REQUIRE(v.description == "D");
+    REQUIRE(v.cover       == "Auxiliaries/.thumbnails/thumbnail_3mf.png");
+    REQUIRE(v.user_id     == "id-42");
+    REQUIRE(v.user_name   == "alice");
+}
+
+TEST_CASE("orca-cli: profile_set allocates profile_info; batches fields",
+          "[orca-cli][project-tab][unit]")
+{
+    auto s = make_empty_state();
+    REQUIRE(s.model->profile_info == nullptr);
+    ProfileSetParams p; p.title = "PT"; p.description = "PD";
+    profile_set(s, p);
+    REQUIRE(s.model->profile_info != nullptr);
+    REQUIRE(s.model->profile_info->ProfileTile        == "PT");
+    REQUIRE(s.model->profile_info->ProfileDescription == "PD");
+}
+
+TEST_CASE("orca-cli: allowed_profile_fields lists exactly three legal names",
+          "[orca-cli][project-tab][unit]")
+{
+    const auto& n = allowed_profile_fields();
+    REQUIRE(n.size() == 3);
+    REQUIRE(std::count(n.begin(), n.end(), "title")       == 1);
+    REQUIRE(std::count(n.begin(), n.end(), "description") == 1);
+    REQUIRE(std::count(n.begin(), n.end(), "cover")       == 1);
+}
+
+TEST_CASE("orca-cli: profile_clear rejects info-only fields with InvalidField",
+          "[orca-cli][project-tab][unit]")
+{
+    auto s = make_empty_state();
+    REQUIRE_THROWS_AS(profile_clear(s, {"license"}),   InvalidField);
+    REQUIRE_THROWS_AS(profile_clear(s, {"user_id"}),   InvalidField);
+}
