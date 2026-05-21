@@ -140,21 +140,27 @@ int do_config_list(const GlobalOpts& g,
             for (const auto& k : keys)
                 rows.push_back({k, project_value(state, k)});
         } else {
-            const auto* obj = find_object(state, object_name);
-            if (!obj) {
+            // Group-by-name: collect every ModelObject sharing the name. The
+            // emptiness check below returns the same exit code as a single-
+            // match miss would have.
+            std::vector<const Slic3r::ModelObject*> matched;
+            for (const auto* o : state.model->objects)
+                if (o->name == object_name) matched.push_back(o);
+            if (matched.empty()) {
                 print_err(g, ExitCode::unknown_reference,
                           "object not found: " + object_name);
                 return int(ExitCode::unknown_reference);
             }
-            // object_config_keys would throw std::out_of_range if obj
-            // were missing; we already checked above, but going through
-            // the helper keeps the listing path consistent with the
-            // mutation path (and exercises G6 indirectly when somebody
-            // edits the helper later).
+            // object_config_keys returns the UNION of keys across the cluster.
             const auto keys = object_config_keys(state, object_name);
             rows.reserve(keys.size());
-            for (const auto& k : keys)
-                rows.push_back({k, object_value(*obj, k)});
+            for (const auto& k : keys) {
+                std::string v;
+                for (const auto* obj : matched) {
+                    if (obj->config.has(k)) { v = object_value(*obj, k); break; }
+                }
+                rows.push_back({k, v});
+            }
         }
     } catch (const std::out_of_range& e) {
         print_err(g, ExitCode::unknown_reference, e.what());

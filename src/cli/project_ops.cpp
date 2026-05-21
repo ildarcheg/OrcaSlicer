@@ -504,16 +504,25 @@ void set_object_config(ProjectState& s, const std::string& object_name,
 {
     using namespace Slic3r;
     validate_key_exists(key);
-    ModelObject& obj = find_object_or_throw(s, object_name);
+
+    // Group-by-name: --count N produces N ModelObjects sharing a name.
+    // Apply the set to every matched object so the cluster stays coherent.
+    std::vector<ModelObject*> matched;
+    for (ModelObject* o : s.model->objects)
+        if (o->name == object_name) matched.push_back(o);
+    if (matched.empty())
+        throw std::out_of_range("object not found: " + object_name);
 
     ConfigSubstitutionContext ctx(ForwardCompatibilitySubstitutionRule::Disable);
-    try {
-        // ModelConfigObject::set_deserialize bumps the model-config
-        // timestamp on write -- same path the GUI uses when a per-object
-        // setting changes through the settings panel.
-        obj.config.set_deserialize(key, value, ctx);
-    } catch (const std::exception& e) {
-        throw BadConfigError("invalid value for '" + key + "': " + e.what());
+    for (ModelObject* obj : matched) {
+        try {
+            // ModelConfigObject::set_deserialize bumps the model-config
+            // timestamp on write -- same path the GUI uses when a per-object
+            // setting changes through the settings panel.
+            obj->config.set_deserialize(key, value, ctx);
+        } catch (const std::exception& e) {
+            throw BadConfigError("invalid value for '" + key + "': " + e.what());
+        }
     }
 }
 
@@ -534,9 +543,18 @@ void unset_project_config(ProjectState& s, const std::string& key)
 void unset_object_config(ProjectState& s, const std::string& object_name,
                          const std::string& key)
 {
+    using namespace Slic3r;
     validate_key_exists(key);
-    Slic3r::ModelObject& obj = find_object_or_throw(s, object_name);
-    obj.config.erase(key);
+
+    // Group-by-name: same rationale as set_object_config.
+    std::vector<ModelObject*> matched;
+    for (ModelObject* o : s.model->objects)
+        if (o->name == object_name) matched.push_back(o);
+    if (matched.empty())
+        throw std::out_of_range("object not found: " + object_name);
+
+    for (ModelObject* obj : matched)
+        obj->config.erase(key);
 }
 
 std::vector<std::string> changed_project_keys(const ProjectState& s)
@@ -556,11 +574,23 @@ std::vector<std::string> changed_project_keys(const ProjectState& s)
 std::vector<std::string> object_config_keys(const ProjectState& s,
                                             const std::string& object_name)
 {
-    const auto& obj = find_object_or_throw(s, object_name);
-    // ModelConfig only ever holds the explicitly-set keys (the GUI
-    // populates it lazily as the user touches settings), so this list IS
-    // the change set -- no diff needed.
-    return obj.config.keys();
+    using namespace Slic3r;
+
+    // Group-by-name: union of keys across every ModelObject sharing the
+    // name. ModelConfig only ever holds the explicitly-set keys (the GUI
+    // populates it lazily as the user touches settings), so the union IS
+    // the change set across the cluster -- no diff needed.
+    std::set<std::string> seen;
+    bool any_match = false;
+    for (const ModelObject* o : s.model->objects) {
+        if (o->name != object_name) continue;
+        any_match = true;
+        for (const std::string& k : o->config.keys())
+            seen.insert(k);
+    }
+    if (!any_match)
+        throw std::out_of_range("object not found: " + object_name);
+    return std::vector<std::string>(seen.begin(), seen.end());
 }
 
 std::vector<VolumeInfo> object_volume_info(const ProjectState& s,
