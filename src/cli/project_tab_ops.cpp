@@ -34,7 +34,18 @@ const char* folder_subdir(AuxFolder f) {
     throw std::logic_error("unreachable: AuxFolder out of range");
 }
 
-InfoView info_view(const ProjectState&)                              { throw std::logic_error("not implemented"); }
+InfoView info_view(const ProjectState& s) {
+    InfoView v;
+    if (!s.model || !s.model->model_info) return v;  // all six fields empty
+    const auto& mi = *s.model->model_info;
+    v.title       = mi.model_name;
+    v.description = mi.description;
+    v.license     = mi.license;
+    v.copyright   = mi.copyright;
+    v.cover       = mi.cover_file;
+    v.origin      = mi.origin;
+    return v;
+}
 bool any_field_set(const InfoSetParams&)                             { throw std::logic_error("not implemented"); }
 void info_set(ProjectState&, const InfoSetParams&)                   { throw std::logic_error("not implemented"); }
 const std::vector<std::string>& allowed_info_fields()                { throw std::logic_error("not implemented"); }
