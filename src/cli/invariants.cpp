@@ -290,9 +290,21 @@ void run_all_invariants(const ProjectState& in_memory,
 void verify_input_template_thumbnails(const std::string& zip_path,
                                       const std::string& display_path)
 {
-    auto entry_names = enumerate_zip_entry_names(zip_path);
-    if (entry_names.empty()) {
-        // Open failure (locked / renamed / genuinely corrupt). The right
+    // Open the staging copy via mz_zip_reader_init_file directly rather than
+    // routing through Slic3r::open_zip_reader (boost::nowide::fopen). On
+    // Windows, paths under %TEMP% can resolve to an 8.3 short form
+    // (e.g. C:\Users\ILDARC~1\AppData\Local\Temp\...). boost::nowide's
+    // UTF-8 -> UTF-16 round-trip can mishandle that form on some toolchains;
+    // miniz's stdio path opens short-name paths reliably because the bytes
+    // are pure ASCII. Sibling-parity with BambuStudio's
+    // src/cli/invariant_guard.cpp::check_thumbnails_in_archive.
+    //
+    // TOCTOU defense (the staging .init-tmp pattern from
+    // commands/project_init.cpp::do_project_init) is preserved by the
+    // caller -- this function just operates on whatever path it's given.
+    mz_zip_archive zip{};
+    if (!mz_zip_reader_init_file(&zip, zip_path.c_str(), 0)) {
+        // Open failure (locked / wrong path / genuinely corrupt). The right
         // remediation is "check the path", NOT "regenerate in the GUI" --
         // do not lead with the latter.
         throw InvariantViolation(
@@ -300,9 +312,17 @@ void verify_input_template_thumbnails(const std::string& zip_path,
     }
 
     std::vector<ZipEntry> name_entries;
-    name_entries.reserve(entry_names.size());
-    for (auto& n : entry_names)
-        name_entries.push_back(ZipEntry{ std::move(n), {} });
+    const mz_uint n = mz_zip_reader_get_num_files(&zip);
+    name_entries.reserve(n);
+    for (mz_uint i = 0; i < n; ++i) {
+        mz_zip_archive_file_stat st;
+        if (!mz_zip_reader_file_stat(&zip, i, &st)) continue;
+        if (st.m_is_directory) continue;
+        std::string name(st.m_filename);
+        std::replace(name.begin(), name.end(), '\\', '/');
+        name_entries.push_back(ZipEntry{ std::move(name), {} });
+    }
+    mz_zip_reader_end(&zip);
 
     try {
         verify_plate_thumbnails(name_entries);
