@@ -8,11 +8,17 @@
 #include "commands/inspect.hpp"
 #include <cstdlib>
 #include <cstdio>
+#include <filesystem>
+#include "libslic3r/Utils.hpp"
 
 namespace { constexpr const char* kVersion = "orca-cli 0.1.0-dev"; }
 
 int main(int argc, char** argv)
 {
+    auto tmp = std::filesystem::temp_directory_path() / "orca-cli";
+    std::filesystem::create_directories(tmp);
+    Slic3r::set_temporary_dir(tmp.string());
+
     CLI::App app{"orca-cli - 3MF composer for OrcaSlicer"};
     app.set_version_flag("--version", kVersion);
     app.require_subcommand(0, 1);
